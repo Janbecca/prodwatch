@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Daily Report</title>
+</head>
+<body>
+    <h1>Daily Report</h1>
+    <table border="1">
+        <tr>
+            <th>Content</th>
+            <th>Sentiment</th>
+            <th>Bot Score</th>
+        </tr>
+        {% for analysis in analysis_results %}
+        <tr>
+            <td>{{ analysis.clean_post.content }}</td>
+            <td>{{ analysis.sentiment }}</td>
+            <td>{{ analysis.bot_score }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+</body>
+</html>

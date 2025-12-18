@@ -1,0 +1,41 @@
+# --- Web 框架 & 基础 ---
+fastapi
+uvicorn[standard]
+pydantic
+python-dotenv
+
+# --- HTTP & 爬虫相关 ---
+requests
+httpx
+beautifulsoup4
+lxml
+playwright
+# 可选：工程化爬虫框架
+scrapy
+
+# --- 多智能体 & LLM 调用 ---
+langchain
+openai
+tiktoken
+
+# --- 数据库 & ORM ---
+SQLAlchemy
+alembic
+psycopg2-binary    # 如果用 PostgreSQL
+# mysqlclient      # 如果用 MySQL，则启用这个，注释掉上面的
+
+# --- 缓存 & 消息队列 ---
+redis              # 用作缓存 or Redis Stream 做队列
+# pika             # 如果你用 RabbitMQ，可以解开这个
+
+# --- NLP & 机器学习 ---
+numpy
+pandas
+scikit-learn
+transformers
+torch              # 如果学校机子撑不住，可以换成 cpu-only 版本或者先注释掉
+
+# --- 日志 & 工具 ---
+loguru
+orjson
+tenacity           # 重试机制，防止爬虫/LLM 偶发失败
