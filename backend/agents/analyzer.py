@@ -1,50 +1,46 @@
-from backend.models.db import db_session
-from backend.models.schema import CleanPost, Analysis
+import os
+import json
+from typing import List
 from datetime import datetime
+from backend.storage.db import get_repo
+import dashscope
 
-# 简单情感分析（示例：正面、负面、无情感）
-def sentiment_analysis(content):
-    positive_words = ['good', 'excellent', 'happy']
-    negative_words = ['bad', 'terrible', 'sad']
+def analyze(posts: List[dict], model: str, project_id: int):
+    repo = get_repo()
+    results = []
+    client = dashscope() if model != "rule-based" else None
 
-    score = 0
-    for word in positive_words:
-        if word in content:
-            score += 1
-    for word in negative_words:
-        if word in content:
-            score -= 1
+    for p in posts:
+        text = p["raw_text"]
+        if model == "rule-based":
+            sentiment = "negative" if "差" in text else "neutral"
+            confidence = 0.6
+            intensity = 0.5
+            emotions = {"angry": 0.4} if sentiment == "negative" else {}
+        else:
+            prompt = f"请输出JSON: {{polarity, confidence, intensity, emotions}} 内容:{text}"
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+                response_format={"type": "json_object"}
+            )
+            data = json.loads(resp.choices[0].message.content)
+            sentiment = data["polarity"]
+            confidence = data["confidence"]
+            intensity = data["intensity"]
+            emotions = data["emotions"]
 
-    if score > 0:
-        return 1  # Positive
-    elif score < 0:
-        return -1  # Negative
-    else:
-        return 0  # Neutral
+        row = {
+            "id": int(datetime.utcnow().timestamp()),
+            "post_clean_id": p["id"],
+            "project_id": project_id,
+            "polarity": sentiment,
+            "confidence": confidence,
+            "intensity": intensity,
+            "emotions": json.dumps(emotions, ensure_ascii=False)
+        }
+        repo.insert("sentiment_result", row)
+        results.append(row)
 
-# 简单水军检测（示例：频繁发帖、相同内容）
-def bot_detection(content, post_time):
-    # 检测频繁发帖和相同内容（简单示例）
-    # 如果内容相似且发帖频率过高，认为是水军
-    # 可以用Simhash对比或者检查短时间内相同内容
-    return False  # 示例暂时返回False，后续可以加入逻辑
-
-# 定义分析智能体
-def analyze():
-    clean_posts = db_session.query(CleanPost).all()
-
-    for post in clean_posts:
-        sentiment = sentiment_analysis(post.content)
-        is_bot = bot_detection(post.content, post.fetched_time)
-
-        analysis = Analysis(
-            clean_id=post.id,
-            sentiment=sentiment,
-            bot_score=100 if is_bot else 0,
-            created_at=datetime.now()
-        )
-        
-        db_session.add(analysis)
-        db_session.commit()
-
-    print("Analysis completed!")
+    return results

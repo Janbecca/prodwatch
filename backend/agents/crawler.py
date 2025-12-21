@@ -1,27 +1,38 @@
-import feedparser
-from backend.models.db import db_session
-from backend.models.schema import RawPost
+import requests
 from datetime import datetime
+from typing import List
+from backend.storage.db import get_repo
 
-# 定义爬虫智能体，用于抓取RSS源
-def crawl():
-    rss_url = "https://example.com/rss"  # 替换为你要抓取的RSS链接
-    feed = feedparser.parse(rss_url)
-    
-    for entry in feed.entries:
-        # 只保存标题、链接和发布时间，其他可以根据需要提取
-        post = RawPost(
-            platform="RSS",
-            url=entry.link,
-            title=entry.title,
-            content_raw=entry.summary,
-            author=entry.author if 'author' in entry else 'Unknown',
-            post_time=datetime(*entry.published_parsed[:6]),
-            fetched_time=datetime.now()
-        )
-        
-        # 将抓取到的文章存入数据库
-        db_session.add(post)
-        db_session.commit()
+PLATFORMS = {
+    "weibo": "https://example.com/weibo/mock",
+    "xhs": "https://example.com/xhs/mock",
+    "douyin": "https://example.com/douyin/mock",
+}
 
-    print("Crawl completed!")
+def crawl(project_id: int, platform_codes: List[str], keyword: str, pipeline_run_id: int):
+    repo = get_repo()
+    results = []
+    now = datetime.utcnow()
+
+    for code in platform_codes:
+        # TODO: replace with real crawler
+        mock_text = f"{keyword} 在 {code} 的样例内容"
+        row = {
+            "id": int(now.timestamp()),
+            "pipeline_run_id": pipeline_run_id,
+            "project_id": project_id,
+            "platform_id": code,
+            "keyword_id": None,
+            "content_type": "post",
+            "platform_post_id": f"{code}_{int(now.timestamp())}",
+            "author_id": None,
+            "publish_time": now,
+            "raw_text": mock_text,
+            "like_count": 0,
+            "comment_count": 0,
+            "share_count": 0
+        }
+        repo.insert("post_raw", row)
+        results.append(row)
+
+    return results

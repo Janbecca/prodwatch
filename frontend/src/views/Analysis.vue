@@ -2,37 +2,58 @@
 import { ref } from 'vue'
 import api from '../api/axios'
 
-const product = ref('CamX')
-const sentiment = ref('')
-const summary = ref(null)
-const comments = ref([])
+const projectId = ref(1)
+const platform = ref(['weibo'])
+const keyword = ref('萤石')
+const model = ref('rule-based')
+const results = ref([])
+const loading = ref(false)
 
-const load = async () => {
-  const { data: s } = await api.get('/api/analysis/summary', { params: { products: [product.value] } })
-  summary.value = s
-  const { data: c } = await api.get('/api/analysis/comments', { params: { product: product.value, sentiment: sentiment.value || undefined } })
-  comments.value = c
+const run = async () => {
+  loading.value = true
+  try {
+    const { data } = await api.post('/api/analysis/run', null, {
+      params: {
+        project_id: projectId.value,
+        platform: platform.value,
+        keyword: keyword.value,
+        model: model.value
+      }
+    })
+    results.value = data.items
+  } finally {
+    loading.value = false
+  }
 }
-
-load()
 </script>
 
 <template>
   <div style="padding:16px;">
-    <h2>数据分析与情感分析</h2>
-    <div style="margin-bottom:8px;">
-      <input v-model="product" placeholder="竞品（如 CamX）" />
-      <select v-model="sentiment">
-        <option value="">全部</option>
-        <option value="positive">正面</option>
-        <option value="neutral">中性</option>
-        <option value="negative">负面</option>
+    <h2>动态分析调试</h2>
+
+    <div>
+      <label>平台：</label>
+      <select multiple v-model="platform">
+        <option value="weibo">微博</option>
+        <option value="xhs">小红书</option>
+        <option value="douyin">抖音</option>
       </select>
-      <button @click="load">查询</button>
+
+      <label>模型：</label>
+      <select v-model="model">
+        <option value="rule-based">Rule-based</option>
+        <option value="gpt-4o-mini">gpt-4o-mini</option>
+      </select>
+
+      <input v-model="keyword" placeholder="关键词" />
+      <button @click="run">运行</button>
     </div>
-    <pre v-if="summary">{{ summary }}</pre>
+
+    <div v-if="loading">运行中...</div>
     <ul>
-      <li v-for="c in comments" :key="c.id">[{{ c.sentiment }}] {{ c.text }}</li>
+      <li v-for="r in results" :key="r.id">
+        [{{ r.polarity }}] {{ r.emotions }}
+      </li>
     </ul>
   </div>
 </template>

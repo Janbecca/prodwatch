@@ -15,7 +15,6 @@ scrapy
 
 # --- 多智能体 & LLM 调用 ---
 langchain
-openai
 tiktoken
 
 # --- 数据库 & ORM ---
@@ -33,9 +32,11 @@ numpy
 pandas
 scikit-learn
 transformers
-torch              # 如果学校机子撑不住，可以换成 cpu-only 版本或者先注释掉
+torch             
 
 # --- 日志 & 工具 ---
 loguru
 orjson
 tenacity           # 重试机制，防止爬虫/LLM 偶发失败
+
+export DASHSCOPE_API_KEY=你的阿里云QwenKey
