@@ -2,7 +2,9 @@
 fastapi
 uvicorn[standard]
 pydantic
+PyJWT
 python-dotenv
+python-multipart
 
 # --- HTTP & 爬虫相关 ---
 requests
@@ -10,33 +12,33 @@ httpx
 beautifulsoup4
 lxml
 playwright
-# 可选：工程化爬虫框架
 scrapy
 
 # --- 多智能体 & LLM 调用 ---
 langchain
 tiktoken
+dashscope
 
 # --- 数据库 & ORM ---
 SQLAlchemy
 alembic
-psycopg2-binary    # 如果用 PostgreSQL
-# mysqlclient      # 如果用 MySQL，则启用这个，注释掉上面的
+psycopg2-binary
+pydantic[email]
+# mysqlclient
 
 # --- 缓存 & 消息队列 ---
-redis              # 用作缓存 or Redis Stream 做队列
-# pika             # 如果你用 RabbitMQ，可以解开这个
+redis
+# pika
 
 # --- NLP & 机器学习 ---
 numpy
 pandas
 scikit-learn
 transformers
-torch             
+torch
+openpyxl
 
 # --- 日志 & 工具 ---
 loguru
 orjson
-tenacity           # 重试机制，防止爬虫/LLM 偶发失败
-
-export DASHSCOPE_API_KEY=你的阿里云QwenKey
+tenacity

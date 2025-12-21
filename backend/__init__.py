@@ -1,1 +1,1 @@
-touch backend/__init__.py
+"""API routers package."""

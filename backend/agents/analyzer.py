@@ -8,7 +8,8 @@ import dashscope
 def analyze(posts: List[dict], model: str, project_id: int):
     repo = get_repo()
     results = []
-    client = dashscope() if model != "rule-based" else None
+    if model != "rule-based":
+       dashscope.api_key = os.getenv("DASHSCOPE_API_KEY")
 
     for p in posts:
         text = p["raw_text"]
@@ -19,13 +20,17 @@ def analyze(posts: List[dict], model: str, project_id: int):
             emotions = {"angry": 0.4} if sentiment == "negative" else {}
         else:
             prompt = f"请输出JSON: {{polarity, confidence, intensity, emotions}} 内容:{text}"
-            resp = client.chat.completions.create(
+            resp = dashscope.Generation.call(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.2,
-                response_format={"type": "json_object"}
+                temperature=0.2
             )
-            data = json.loads(resp.choices[0].message.content)
+            output = (
+                resp.output.text
+                if hasattr(resp, "output") and hasattr(resp.output, "text")
+                else resp["output"]["text"]
+            )
+            data = json.loads(output)
             sentiment = data["polarity"]
             confidence = data["confidence"]
             intensity = data["intensity"]

@@ -1,16 +1,22 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
+from typing import Optional
+from backend.storage.db import get_repo
 
 router = APIRouter(prefix="/posts", tags=["posts"])
 
 
-@router.get("")
-def list_posts():
-    # stub: return sample posts
-    return [
-        {"id": 1, "title": "示例贴文A", "source": "weibo"},
-        {"id": 2, "title": "示例贴文B", "source": "zhihu"},
-    ]
-
+def list_posts(
+    platform: Optional[str] = Query(None),
+    project_id: Optional[int] = Query(None),
+):
+    repo = get_repo()
+    filters = {}
+    if platform is not None:
+        filters["platform"] = platform
+    if project_id is not None:
+        filters["project_id"] = project_id
+    df = repo.query("post_raw", filters if filters else None)
+    return df.to_dict(orient="records")
 
 @router.get("/{post_id}")
 def get_post(post_id: int):
