@@ -6,8 +6,8 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 import jwt
 
 from ..models.schema import User, UserCreate, UserRead, Token, UserRole
-from ..storage.users import create_user, get_user_by_username, verify_password
-
+# from ..storage.users import create_user, get_user_by_username, verify_password
+from ..storage.users import create_user, ensure_seed_users, get_user_by_username, verify_password
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 SECRET_KEY = "change-me-in-env"
@@ -15,6 +15,15 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 12
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+
+ensure_seed_users([
+    {
+        "email": "admin@example.com",
+        "username": "admin",
+        "password": "admin123",
+        "role": UserRole.admin,
+    }
+])
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:

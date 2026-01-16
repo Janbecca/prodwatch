@@ -1,0 +1,12 @@
+{
+  "admin": {
+    "id": 1,
+    "email": "admin@example.com",
+    "phone": null,
+    "username": "admin",
+    "password_hash": "856587aa2e2913022906bb72bbb474f855e07dfde20334d016251b79dcf84a9e",
+    "salt": "355452878adba7f006ad7bedb1c96507",
+    "role": "admin",
+    "is_active": true
+  }
+}
