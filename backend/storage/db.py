@@ -30,7 +30,6 @@ class ExcelRepository:
                 df = df[df[k] == v]
         return df
 
-
 class SqlRepository:
     def __init__(self, url: str):
         self.url = url
@@ -41,7 +40,6 @@ class SqlRepository:
 
     def query(self, sheet: str, filters: Optional[Dict] = None):
         raise NotImplementedError
-
 
 def get_repo():
     if DB_TYPE == "excel":
