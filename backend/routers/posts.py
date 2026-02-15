@@ -1,23 +1,36 @@
 # backend/routers/posts.py
 from fastapi import APIRouter, Query
 from typing import Optional
-from backend.storage.db import get_repo
+import pandas as pd
+from backend.storage.db import get_repo, get_latest_pipeline_run_id
 
 router = APIRouter(prefix="/posts", tags=["posts"])
 
 
 @router.get("")  # 最终暴露为 GET /api/posts
 def list_posts(
-    platform: Optional[str] = Query(None),
+    platform_id: Optional[int] = Query(None),
     project_id: Optional[int] = Query(None),
+    mode: Optional[str] = Query("latest_run"),
 ):
     repo = get_repo()
     filters = {}
-    if platform is not None:
-        filters["platform"] = platform
+    if platform_id is not None:
+        filters["platform_id"] = platform_id
     if project_id is not None:
         filters["project_id"] = project_id
+    if mode == "latest_run":
+        latest_run_id = get_latest_pipeline_run_id(repo)
+        if latest_run_id is None:
+            return []
+        filters["pipeline_run_id"] = latest_run_id
+
     df = repo.query("post_raw", filters if filters else None)
+    if "id" in df.columns:
+        df = df[pd.to_numeric(df["id"], errors="coerce").notna()]
+    if "publish_time" in df.columns:
+        df["publish_time"] = pd.to_datetime(df["publish_time"], errors="coerce")
+        df = df.sort_values(by="publish_time", ascending=False)
     return df.to_dict(orient="records")
 
 

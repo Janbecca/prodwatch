@@ -17,8 +17,8 @@ const run = async () => {
         project_id: projectId.value,
         platform: platform.value,
         keyword: keyword.value,
-        model: model.value
-      }
+        model: model.value,
+      },
     })
     results.value = data.items
   } finally {

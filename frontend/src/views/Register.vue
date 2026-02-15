@@ -15,7 +15,12 @@ const submit = async () => {
   loading.value = true
   error.value = ''
   try {
-    await api.post('/api/auth/register', { email: email.value, phone: phone.value, username: username.value, password: password.value })
+    await api.post('/api/auth/register', {
+      email: email.value,
+      phone: phone.value,
+      username: username.value,
+      password: password.value,
+    })
     router.push('/login')
   } catch (e) {
     error.value = '注册失败'
@@ -34,7 +39,9 @@ const submit = async () => {
       <input v-model="phone" placeholder="手机号（可选）" style="width:100%;margin:8px 0;padding:8px;" />
       <input v-model="username" placeholder="用户名" style="width:100%;margin:8px 0;padding:8px;" />
       <input v-model="password" type="password" placeholder="密码" style="width:100%;margin:8px 0;padding:8px;" />
-      <button :disabled="loading" @click="submit" style="width:100%;padding:10px;">{{ loading ? '提交中...' : '注册' }}</button>
+      <button :disabled="loading" @click="submit" style="width:100%;padding:10px;">
+        {{ loading ? '提交中...' : '注册' }}
+      </button>
     </div>
     <p style="margin-top:12px;">
       已有账号？<router-link to="/login">去登录</router-link>

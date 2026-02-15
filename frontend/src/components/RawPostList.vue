@@ -25,7 +25,7 @@ onMounted(async () => {
     <div v-if="loading">加载中...</div>
     <div v-else-if="error">{{ error }}</div>
     <ul v-else>
-      <li v-for="p in posts" :key="p.id">{{ p.title }} - {{ p.source }}</li>
+      <li v-for="p in posts" :key="p.id">{{ p.raw_text }} - {{ p.platform_id }}</li>
     </ul>
   </div>
 </template>

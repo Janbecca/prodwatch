@@ -19,7 +19,7 @@ const save = async () => {
   <div style="padding:16px;">
     <h2>系统设置与管理</h2>
     <ul>
-      <li v-for="(d,i) in datasources" :key="d.id">
+      <li v-for="d in datasources" :key="d.id">
         {{ d.id }} 频率：<input v-model="d.freq" />
       </li>
     </ul>

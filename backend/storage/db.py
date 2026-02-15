@@ -25,8 +25,12 @@ class ExcelRepository:
 
     def query(self, sheet: str, filters: Optional[Dict] = None) -> pd.DataFrame:
         df = self._read(sheet)
+        if "id" in df.columns:
+            df = df[pd.to_numeric(df["id"], errors="coerce").notna()]
         if filters:
             for k, v in filters.items():
+                if k not in df.columns:
+                    continue
                 df = df[df[k] == v]
         return df
 
@@ -45,3 +49,14 @@ def get_repo():
     if DB_TYPE == "excel":
         return ExcelRepository(EXCEL_PATH)
     return SqlRepository(os.getenv("DATABASE_URL"))
+
+
+def get_latest_pipeline_run_id(repo: ExcelRepository):
+    df = repo.query("post_raw")
+    if "pipeline_run_id" not in df.columns or df.empty:
+        return None
+    values = pd.to_numeric(df["pipeline_run_id"], errors="coerce")
+    values = values.dropna()
+    if values.empty:
+        return None
+    return int(values.max())

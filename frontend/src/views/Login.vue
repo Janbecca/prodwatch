@@ -31,7 +31,9 @@ const submit = async () => {
     <div>
       <input v-model="username" placeholder="用户名" style="width:100%;margin:8px 0;padding:8px;" />
       <input v-model="password" type="password" placeholder="密码" style="width:100%;margin:8px 0;padding:8px;" />
-      <button :disabled="loading" @click="submit" style="width:100%;padding:10px;">{{ loading ? '登录中...' : '登录' }}</button>
+      <button :disabled="loading" @click="submit" style="width:100%;padding:10px;">
+        {{ loading ? '登录中...' : '登录' }}
+      </button>
     </div>
     <p style="margin-top:12px;">
       还没有账号？<router-link to="/register">去注册</router-link>

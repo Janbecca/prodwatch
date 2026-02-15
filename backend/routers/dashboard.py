@@ -11,7 +11,7 @@ def get_kpis(user=Depends(get_current_user)):
 
 @router.get("/trends")
 def get_trends(user=Depends(get_current_user)):
-    return {"series": [{"name": "BrandA", "data": [1,2,3,2,4]}]}
+    return {"series": [{"name": "BrandA", "data": [1, 2, 3, 2, 4]}]}
 
 
 @router.get("/ranking")

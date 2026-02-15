@@ -5,16 +5,18 @@ from datetime import datetime
 from backend.storage.db import get_repo
 import dashscope
 
+
 def analyze(posts: List[dict], model: str, project_id: int):
     repo = get_repo()
     results = []
     if model != "rule-based":
-       dashscope.api_key = os.getenv("DASHSCOPE_API_KEY")
+        dashscope.api_key = os.getenv("DASHSCOPE_API_KEY")
 
     for p in posts:
         text = p["raw_text"]
         if model == "rule-based":
-            sentiment = "negative" if "差" in text else "neutral"
+            is_negative = any(word in text for word in ["差", "坏", "失望", "糟糕"])
+            sentiment = "negative" if is_negative else "neutral"
             confidence = 0.6
             intensity = 0.5
             emotions = {"angry": 0.4} if sentiment == "negative" else {}
@@ -23,7 +25,7 @@ def analyze(posts: List[dict], model: str, project_id: int):
             resp = dashscope.Generation.call(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.2
+                temperature=0.2,
             )
             output = (
                 resp.output.text
@@ -43,7 +45,7 @@ def analyze(posts: List[dict], model: str, project_id: int):
             "polarity": sentiment,
             "confidence": confidence,
             "intensity": intensity,
-            "emotions": json.dumps(emotions, ensure_ascii=False)
+            "emotions": json.dumps(emotions, ensure_ascii=False),
         }
         repo.insert("sentiment_result", row)
         results.append(row)
