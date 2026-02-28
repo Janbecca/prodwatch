@@ -1,18 +1,53 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref } from 'vue'
 import api from '../api/axios'
 
-const report = ref(null)
+const summary = ref(null)
+const error = ref('')
+const loading = ref(false)
 
-onMounted(async () => {
-  const { data } = await api.get('/api/report')
-  report.value = data
-})
+const fetchReport = async () => {
+  loading.value = true
+  error.value = ''
+  try {
+    const { data } = await api.get('/api/report')
+    summary.value = data
+  } catch (e) {
+    error.value = e?.response?.data?.detail || '获取报告失败'
+  } finally {
+    loading.value = false
+  }
+}
+
+fetchReport()
 </script>
 
 <template>
-  <div style="padding:16px;">
-    <h2>报告生成与导出</h2>
-    <pre v-if="report">{{ report }}</pre>
-  </div>
+  <section class="page">
+    <el-page-header content="报告摘要" />
+    <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" />
+    <div class="title-row">
+      <h2>报告中心</h2>
+      <el-button type="primary" :loading="loading" @click="fetchReport">{{ loading ? '加载中...' : '重新加载' }}</el-button>
+    </div>
+    <el-card class="card" shadow="hover">
+      <pre>{{ summary }}</pre>
+    </el-card>
+  </section>
 </template>
+
+<style scoped>
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.card { border-radius: 10px; }
+</style>

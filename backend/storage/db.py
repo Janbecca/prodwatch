@@ -23,6 +23,10 @@ class ExcelRepository:
         df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
         self._write(sheet, df)
 
+    def replace(self, sheet: str, rows: List[Dict]):
+        df = pd.DataFrame(rows)
+        self._write(sheet, df)
+
     def query(self, sheet: str, filters: Optional[Dict] = None) -> pd.DataFrame:
         df = self._read(sheet)
         if "id" in df.columns:

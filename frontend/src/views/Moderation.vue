@@ -1,24 +1,70 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref } from 'vue'
 import api from '../api/axios'
 
 const overview = ref(null)
-const items = ref([])
+const product = ref('')
+const list = ref([])
+const error = ref('')
 
-onMounted(async () => {
-  const { data: o } = await api.get('/api/moderation/spam/overview')
-  overview.value = o
-  const { data: l } = await api.get('/api/moderation/spam/list')
-  items.value = l
-})
+const loadOverview = async () => {
+  try {
+    const { data } = await api.get('/api/moderation/spam/overview')
+    overview.value = data
+  } catch (e) {
+    error.value = e?.response?.data?.detail || '加载总览失败'
+  }
+}
+
+const loadList = async () => {
+  try {
+    const { data } = await api.get('/api/moderation/spam/list', {
+      params: { product: product.value || undefined },
+    })
+    list.value = data
+  } catch (e) {
+    error.value = e?.response?.data?.detail || '加载列表失败'
+  }
+}
+
+loadOverview()
+loadList()
 </script>
 
 <template>
-  <div style="padding:16px;">
-    <h2>水军识别与数据验证</h2>
-    <pre v-if="overview">{{ overview }}</pre>
-    <ul>
-      <li v-for="i in items" :key="i.id">{{ i.product }} - {{ i.reason }}</li>
-    </ul>
-  </div>
+  <section class="page">
+    <el-page-header content="水军识别调试" />
+    <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" />
+    <el-card class="card" shadow="hover">
+      <el-button type="primary" plain @click="loadOverview">刷新总览</el-button>
+      <pre>{{ overview }}</pre>
+    </el-card>
+
+    <el-card class="card" shadow="hover">
+      <div class="actions">
+        <el-input v-model="product" placeholder="按产品筛选（可选）" style="max-width: 280px" />
+        <el-button @click="loadList">查询列表</el-button>
+      </div>
+      <ul>
+        <li v-for="item in list" :key="item.id">{{ item.id }} - {{ item.product }} - {{ item.reason }}</li>
+      </ul>
+    </el-card>
+  </section>
 </template>
+
+<style scoped>
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.card { border-radius: 10px; }
+
+.actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+</style>

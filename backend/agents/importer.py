@@ -1,7 +1,6 @@
 from datetime import datetime
 from typing import Any, Dict
 import pandas as pd
-from backend.storage.db import get_latest_pipeline_run_id
 
 
 def _now_ts_ms() -> int:
@@ -72,7 +71,7 @@ def import_from_excel(repo, excel_path: str) -> Dict[str, Any]:
 
     for _, row in upload_df.iterrows():
         project_id = row.get("project_id")
-        platform_code = _normalize_str(row.get("platform"))
+        platform_code = _normalize_str(row.get("platform_code"))
         platform_id = platform_map.get(platform_code)
         if platform_id is None:
             skipped += 1

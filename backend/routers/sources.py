@@ -1,5 +1,5 @@
-from fastapi import APIRouter
-from backend.storage.db import get_repo, EXCEL_PATH
+from fastapi import APIRouter, HTTPException
+from backend.storage.db import EXCEL_PATH, get_repo
 from backend.agents.importer import import_from_excel
 
 router = APIRouter(prefix="/sources", tags=["sources"])
@@ -7,16 +7,24 @@ router = APIRouter(prefix="/sources", tags=["sources"])
 
 @router.get("")
 def list_sources():
-    return [
-        {"id": "weibo", "name": "微博"},
-        {"id": "zhihu", "name": "知乎"},
-        {"id": "bilibili", "name": "哔哩哔哩"},
-    ]
+    repo = get_repo()
+    df = repo.query("platform")
+    if df.empty:
+        return []
+    cols = [c for c in ["id", "code", "name", "created_at"] if c in df.columns]
+    return df[cols].to_dict(orient="records")
 
 
 @router.get("/{source_id}")
 def get_source(source_id: str):
-    return {"id": source_id, "name": source_id.capitalize()}
+    repo = get_repo()
+    df = repo.query("platform")
+    if "code" not in df.columns:
+        raise HTTPException(status_code=404, detail="source not found")
+    target = df[df["code"].astype(str) == source_id]
+    if target.empty:
+        raise HTTPException(status_code=404, detail="source not found")
+    return target.iloc[0].to_dict()
 
 
 @router.post("/import_excel")

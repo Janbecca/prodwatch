@@ -1,4 +1,3 @@
-# backend/routers/posts.py
 from fastapi import APIRouter, Query
 from typing import Optional
 import pandas as pd
@@ -7,7 +6,7 @@ from backend.storage.db import get_repo, get_latest_pipeline_run_id
 router = APIRouter(prefix="/posts", tags=["posts"])
 
 
-@router.get("")  # 最终暴露为 GET /api/posts
+@router.get("")
 def list_posts(
     platform_id: Optional[int] = Query(None),
     project_id: Optional[int] = Query(None),
@@ -36,4 +35,8 @@ def list_posts(
 
 @router.get("/{post_id}")
 def get_post(post_id: int):
-    return {"id": post_id, "title": f"示例贴文#{post_id}", "content": "..."}
+    repo = get_repo()
+    df = repo.query("post_raw", {"id": post_id})
+    if df.empty:
+        return {"id": post_id, "detail": "not found"}
+    return df.iloc[0].to_dict()
