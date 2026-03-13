@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from backend.storage.db import EXCEL_PATH, get_repo
 from backend.agents.importer import import_from_excel
+from backend.agents.pipeline import process_existing_run
 
 router = APIRouter(prefix="/sources", tags=["sources"])
 
@@ -30,4 +31,15 @@ def get_source(source_id: str):
 @router.post("/import_excel")
 def import_excel():
     repo = get_repo()
-    return import_from_excel(repo, EXCEL_PATH)
+    result = import_from_excel(repo, EXCEL_PATH)
+    run_id = result.get("pipeline_run_id")
+    if run_id:
+        post = process_existing_run(int(run_id))
+        result["post_process"] = {
+            "cleaned_posts": post.cleaned_posts,
+            "spam_scored": post.spam_scored,
+            "sentiment_scored": post.sentiment_scored,
+            "daily_metrics": post.daily_metrics,
+            "report_id": post.report_id,
+        }
+    return result

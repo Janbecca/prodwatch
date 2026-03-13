@@ -1,16 +1,17 @@
 from datetime import datetime, timedelta
 from typing import Optional
+import os
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 import jwt
 
-from ..models.schema import User, UserCreate, UserRead, Token, UserRole
+from ..models.schema import User, UserCreate, UserRead, Token, UserRole, LoginRequest
 # from ..storage.users import create_user, get_user_by_username, verify_password
 from ..storage.users import create_user, ensure_seed_users, get_user_by_username, verify_password
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-SECRET_KEY = "change-me-in-env"
+SECRET_KEY = os.getenv("AUTH_SECRET_KEY", "dev-insecure-secret")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 12
 
@@ -54,6 +55,22 @@ def login(form_data: OAuth2PasswordRequestForm = Depends()):
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户名或密码错误")
     if not verify_password(form_data.password, user.salt, user.password_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户名或密码错误")
+    token = create_access_token({"sub": str(user.id), "role": user.role})
+    return Token(access_token=token)
+
+
+@router.post("/login_json", response_model=Token)
+def login_json(payload: LoginRequest):
+    """
+    JSON login endpoint (does not require python-multipart).
+
+    Frontend should prefer this endpoint to avoid 500 errors when form parsing deps are missing.
+    """
+    user = get_user_by_username(payload.username)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户名或密码错误")
+    if not verify_password(payload.password, user.salt, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户名或密码错误")
     token = create_access_token({"sub": str(user.id), "role": user.role})
     return Token(access_token=token)

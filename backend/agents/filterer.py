@@ -1,34 +1,18 @@
 from typing import List
-from bs4 import BeautifulSoup
-from simhash import Simhash
+
+from .pipeline import clean_posts_for_run
 from backend.storage.db import get_repo
 
 
-# 过滤智能体：去除 HTML 标签并生成 Simhash
-def filter_posts() -> List[dict]:
+def filter_posts(pipeline_run_id: int) -> List[dict]:
+    """
+    Compatibility wrapper for the "filter agent" concept.
+
+    Writes cleaned posts into `post_clean` (aligned with the Excel schema) and returns the
+    cleaned rows for this run.
+    """
+    clean_posts_for_run(pipeline_run_id)
     repo = get_repo()
-    try:
-        raw_df = repo.query("post_raw")
-    except Exception:
-        return []
+    df = repo.query("post_clean", {"pipeline_run_id": pipeline_run_id})
+    return df.to_dict(orient="records")
 
-    results = []
-    for _, row in raw_df.iterrows():
-        soup = BeautifulSoup(str(row.get("raw_text", "")), "html.parser")
-        cleaned_content = soup.get_text()
-        simhash_value = Simhash(cleaned_content).value
-
-        clean_row = {
-            "id": int(simhash_value),
-            "raw_id": row.get("id"),
-            "content": cleaned_content,
-            "simhash": simhash_value,
-            "dedup_group_id": simhash_value % 10,
-        }
-        try:
-            repo.insert("post_clean", clean_row)
-        except Exception:
-            pass
-        results.append(clean_row)
-
-    return results

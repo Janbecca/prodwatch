@@ -1,43 +1,33 @@
 from fastapi import APIRouter, Query
 from typing import List
-from backend.storage.db import get_repo
-from backend.agents.crawler import crawl
-from backend.agents.analyzer import analyze
-from datetime import datetime
+
+from backend.agents.pipeline import run_manual_pipeline
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
+
 
 @router.post("/run")
 def run_analysis(
     project_id: int = Query(...),
     platform: List[str] = Query(...),
     keyword: str = Query(...),
-    model: str = Query("rule-based")
+    model: str = Query("rule-based"),
 ):
-    repo = get_repo()
+    """
+    Manual pipeline trigger:
+    - crawl (mock) -> clean -> spam -> sentiment -> daily metrics -> report
 
-    # 1. pipeline_run 记录
-    run_id = int(datetime.utcnow().timestamp())
-    repo.insert("pipeline_run", {
-        "id": run_id,
-        "project_id": project_id,
-        "run_no": f"{datetime.utcnow().strftime('%Y%m%d')}-{run_id}",
-        "trigger_type": "manual",
-        "status": "running",
-        "start_time": datetime.utcnow(),
-        "end_time": None,
-        "params": f'{{"platform":{platform},"keyword":"{keyword}","model":"{model}"}}',
-        "created_at": datetime.utcnow()
-    })
-
-    # 2. 抓取
-    posts = crawl(project_id, platform, keyword, run_id)
-
-    # 3. 分析
-    results = analyze(posts, model, project_id)
-
+    Manual fill:
+    - Replace the mock crawler with real platform adapters.
+    """
+    result = run_manual_pipeline(project_id=project_id, platform_codes=platform, keyword=keyword, sentiment_model=model)
     return {
-        "run_id": run_id,
-        "count": len(results),
-        "items": results
+        "run_id": result.pipeline_run_id,
+        "crawled_posts": result.crawled_posts,
+        "cleaned_posts": result.cleaned_posts,
+        "spam_scored": result.spam_scored,
+        "sentiment_scored": result.sentiment_scored,
+        "daily_metrics": result.daily_metrics,
+        "report_id": result.report_id,
     }
+

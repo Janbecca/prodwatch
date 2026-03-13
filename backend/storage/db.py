@@ -29,14 +29,32 @@ class ExcelRepository:
 
     def query(self, sheet: str, filters: Optional[Dict] = None) -> pd.DataFrame:
         df = self._read(sheet)
+        # Many sheets include a second "Chinese header" row where `id` is non-numeric.
+        # Only drop non-numeric `id` rows when the sheet actually contains numeric ids.
         if "id" in df.columns:
-            df = df[pd.to_numeric(df["id"], errors="coerce").notna()]
+            numeric_ids = pd.to_numeric(df["id"], errors="coerce")
+            if numeric_ids.notna().any():
+                df = df[numeric_ids.notna()]
         if filters:
             for k, v in filters.items():
                 if k not in df.columns:
                     continue
                 df = df[df[k] == v]
         return df
+
+    def update_by_id(self, sheet: str, row_id, updates: Dict) -> bool:
+        df = self._read(sheet)
+        if "id" not in df.columns or df.empty:
+            return False
+        mask = df["id"] == row_id
+        if not bool(mask.any()):
+            return False
+        for k, v in updates.items():
+            if k not in df.columns:
+                df[k] = None
+            df.loc[mask, k] = v
+        self._write(sheet, df)
+        return True
 
 class SqlRepository:
     def __init__(self, url: str):

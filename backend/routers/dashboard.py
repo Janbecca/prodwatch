@@ -1,5 +1,7 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query
 import pandas as pd
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Tuple
 from backend.storage.db import get_repo
 from .auth import get_current_user
 
@@ -35,6 +37,286 @@ def get_kpis(user=Depends(get_current_user)):
     }
 
 
+def _safe_int(value: Any) -> Optional[int]:
+    try:
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return None
+        return int(value)
+    except Exception:
+        return None
+
+
+def _parse_days(days: int) -> Tuple[datetime, datetime]:
+    days = max(1, min(int(days), 365))
+    end = datetime.utcnow()
+    start = end - timedelta(days=days - 1)
+    start = datetime(start.year, start.month, start.day)
+    return start, end
+
+
+def _parse_range(days: int, start_date: Optional[str], end_date: Optional[str]) -> Tuple[datetime, datetime]:
+    """
+    Returns (start, end) in UTC.
+    - If start_date/end_date provided: use them (end_date is inclusive for the whole day).
+    - Otherwise fallback to `days` (last N days).
+    """
+    if not start_date and not end_date:
+        return _parse_days(days)
+
+    now = datetime.utcnow()
+    start_dt = pd.to_datetime(start_date, errors="coerce") if start_date else pd.NaT
+    end_dt = pd.to_datetime(end_date, errors="coerce") if end_date else pd.NaT
+
+    start: datetime
+    end: datetime
+
+    if pd.notna(end_dt):
+        end = end_dt.to_pydatetime() if hasattr(end_dt, "to_pydatetime") else now
+    else:
+        end = now
+    end = datetime(end.year, end.month, end.day, 23, 59, 59, 999999)
+
+    if pd.notna(start_dt):
+        start = start_dt.to_pydatetime() if hasattr(start_dt, "to_pydatetime") else (end - timedelta(days=days - 1))
+    else:
+        start = end - timedelta(days=max(1, min(int(days), 365)) - 1)
+    start = datetime(start.year, start.month, start.day)
+
+    if start > end:
+        start, end = end, start
+    return start, end
+
+
+def _project_name_map(repo) -> Dict[int, str]:
+    df = repo.query("monitor_project")
+    mapping: Dict[int, str] = {}
+    if df.empty or "id" not in df.columns:
+        return mapping
+    for _, row in df.iterrows():
+        pid = pd.to_numeric(row.get("id"), errors="coerce")
+        if pd.notna(pid):
+            mapping[int(pid)] = str(row.get("name") or f"project_{int(pid)}")
+    return mapping
+
+
+def _project_brand_map(repo) -> Dict[int, Optional[int]]:
+    df = repo.query("monitor_project")
+    mapping: Dict[int, Optional[int]] = {}
+    if df.empty or "id" not in df.columns:
+        return mapping
+    for _, row in df.iterrows():
+        pid = pd.to_numeric(row.get("id"), errors="coerce")
+        if pd.notna(pid):
+            mapping[int(pid)] = _safe_int(row.get("brand_id"))
+    return mapping
+
+
+def _brand_name_map(repo) -> Dict[int, str]:
+    df = repo.query("brand")
+    mapping: Dict[int, str] = {}
+    if df.empty or not {"id", "name"}.issubset(df.columns):
+        return mapping
+    for _, row in df.iterrows():
+        bid = pd.to_numeric(row.get("id"), errors="coerce")
+        if pd.notna(bid):
+            mapping[int(bid)] = str(row.get("name") or f"brand_{int(bid)}")
+    return mapping
+
+
+def _platform_name_map(repo) -> Dict[int, str]:
+    df = repo.query("platform")
+    mapping: Dict[int, str] = {}
+    if df.empty or not {"id", "name"}.issubset(df.columns):
+        return mapping
+    for _, row in df.iterrows():
+        pid = pd.to_numeric(row.get("id"), errors="coerce")
+        if pd.notna(pid):
+            mapping[int(pid)] = str(row.get("name") or f"platform_{int(pid)}")
+    return mapping
+
+
+def _projects_for_brands(repo, brand_ids: List[int]) -> Tuple[List[int], Dict[int, int]]:
+    """
+    Returns (project_ids, project_id -> brand_id map) for the given brand ids.
+    """
+    projects_df = repo.query("monitor_project")
+    project_ids: List[int] = []
+    project_brand: Dict[int, int] = {}
+    if projects_df.empty or "id" not in projects_df.columns:
+        return project_ids, project_brand
+
+    for _, row in projects_df.iterrows():
+        pid = _safe_int(row.get("id"))
+        bid = _safe_int(row.get("brand_id"))
+        if pid is None or bid is None:
+            continue
+        project_brand[pid] = bid
+        if bid in set(int(x) for x in brand_ids):
+            project_ids.append(pid)
+    return project_ids, project_brand
+
+
+def _coerce_daily_metric_numeric(daily_df: pd.DataFrame) -> pd.DataFrame:
+    if daily_df is None or daily_df.empty:
+        return daily_df
+    numeric_cols = [
+        "project_id",
+        "platform_id",
+        "total_posts",
+        "valid_posts",
+        "spam_posts",
+        "pos_posts",
+        "neu_posts",
+        "neg_posts",
+    ]
+    for c in numeric_cols:
+        if c in daily_df.columns:
+            daily_df[c] = pd.to_numeric(daily_df[c], errors="coerce").fillna(0)
+    return daily_df
+
+
+@router.get("/options")
+def get_options(user=Depends(get_current_user)):
+    repo = get_repo()
+    brand_df = repo.query("brand")
+    projects_df = repo.query("monitor_project")
+    platforms_df = repo.query("platform")
+
+    brands: List[Dict[str, Any]] = []
+    if not brand_df.empty:
+        for _, row in brand_df.iterrows():
+            bid = _safe_int(row.get("id"))
+            if bid is None:
+                continue
+            brands.append({"id": bid, "name": str(row.get("name") or f"brand_{bid}")})
+
+    projects: List[Dict[str, Any]] = []
+    if not projects_df.empty:
+        for _, row in projects_df.iterrows():
+            pid = _safe_int(row.get("id"))
+            if pid is None:
+                continue
+            projects.append(
+                {
+                    "id": pid,
+                    "brand_id": _safe_int(row.get("brand_id")),
+                    "name": str(row.get("name") or f"project_{pid}"),
+                    "description": row.get("description"),
+                    "is_active": int(pd.to_numeric(row.get("is_active"), errors="coerce") or 0),
+                }
+            )
+
+    platforms: List[Dict[str, Any]] = []
+    if not platforms_df.empty:
+        for _, row in platforms_df.iterrows():
+            pid = _safe_int(row.get("id"))
+            if pid is None:
+                continue
+            platforms.append(
+                {
+                    "id": pid,
+                    "code": str(row.get("code") or ""),
+                    "name": str(row.get("name") or f"platform_{pid}"),
+                }
+            )
+
+    return {"brands": brands, "projects": projects, "platforms": platforms}
+
+
+@router.get("/overview")
+def get_overview(
+    brand_ids: Optional[List[int]] = Query(None, description="1-4 brand ids"),
+    project_ids: Optional[List[int]] = Query(None, description="(Deprecated) 1-4 project ids"),
+    days: int = Query(7, ge=1, le=365),
+    start_date: Optional[str] = Query(None, description="Custom date range start (YYYY-MM-DD)."),
+    end_date: Optional[str] = Query(None, description="Custom date range end (YYYY-MM-DD)."),
+    user=Depends(get_current_user),
+):
+    """
+    Aggregated KPI panel for selected brands.
+    Uses `daily_metric` as the primary source of truth.
+    """
+    # Backward-compatible input: old frontend used `project_ids`.
+    if not brand_ids and project_ids:
+        proj_brand = _project_brand_map(get_repo())
+        derived = []
+        for pid in project_ids:
+            try:
+                bid = proj_brand.get(int(pid))
+                if bid is not None:
+                    derived.append(int(bid))
+            except Exception:
+                continue
+        brand_ids = derived
+
+    if not brand_ids:
+        raise HTTPException(status_code=422, detail="brand_ids is required (or provide deprecated project_ids)")
+
+    brand_ids = [int(x) for x in brand_ids][:4]
+    repo = get_repo()
+    start, end = _parse_range(days, start_date, end_date)
+    project_ids, project_brand = _projects_for_brands(repo, brand_ids)
+    if not project_ids:
+        return {"range": {"from": start.date().isoformat(), "to": end.date().isoformat()}, "items": []}
+
+    daily_df = repo.query("daily_metric")
+    if daily_df.empty:
+        return {"range": {"from": start.date().isoformat(), "to": end.date().isoformat()}, "items": []}
+
+    daily_df["metric_date"] = pd.to_datetime(daily_df.get("metric_date"), errors="coerce")
+    daily_df = daily_df.dropna(subset=["metric_date"])
+    daily_df = daily_df[(daily_df["metric_date"] >= start) & (daily_df["metric_date"] <= end)]
+    daily_df = _coerce_daily_metric_numeric(daily_df)
+    if "project_id" in daily_df.columns:
+        daily_df = daily_df[daily_df["project_id"].astype(int).isin(project_ids)]
+    if daily_df.empty:
+        return {"range": {"from": start.date().isoformat(), "to": end.date().isoformat()}, "items": []}
+
+    brand_map = _brand_name_map(repo)
+    sent_df = repo.query("sentiment_result")
+    brand_intensity_map: Dict[int, float] = {}
+    if not sent_df.empty and {"project_id", "intensity"}.issubset(sent_df.columns):
+        sent_df["intensity"] = pd.to_numeric(sent_df["intensity"], errors="coerce")
+        sent_df = sent_df.dropna(subset=["intensity"])
+        if not sent_df.empty:
+            sent_df = sent_df[sent_df["project_id"].apply(lambda x: _safe_int(x) in project_ids)]
+            sent_df["brand_id"] = sent_df["project_id"].apply(lambda x: project_brand.get(_safe_int(x) or -1))
+            for bid, g in sent_df.dropna(subset=["brand_id"]).groupby("brand_id"):
+                try:
+                    brand_intensity_map[int(bid)] = round(float(g["intensity"].mean()), 4)
+                except Exception:
+                    pass
+
+    # Aggregate per brand
+    daily_df["brand_id"] = daily_df["project_id"].apply(lambda x: project_brand.get(int(x), None))
+    items: List[Dict[str, Any]] = []
+    for bid, g in daily_df.dropna(subset=["brand_id"]).groupby("brand_id"):
+        bid_int = int(bid)
+        if bid_int not in brand_ids:
+            continue
+        total = int(g.get("total_posts", 0).sum())
+        valid = int(g.get("valid_posts", 0).sum())
+        spam = int(g.get("spam_posts", 0).sum())
+        pos = int(g.get("pos_posts", 0).sum())
+        neu = int(g.get("neu_posts", 0).sum())
+        neg = int(g.get("neg_posts", 0).sum())
+        denom = max(pos + neu + neg, 0)
+        items.append(
+            {
+                "brand_id": bid_int,
+                "brand_name": brand_map.get(bid_int, f"brand_{bid_int}"),
+                "total_posts": total,
+                "positive_ratio": _safe_ratio(pos, denom),
+                "negative_ratio": _safe_ratio(neg, denom),
+                "intensity": brand_intensity_map.get(bid_int, 0.0),
+                "spam_ratio": _safe_ratio(spam, max(valid, 0)),
+            }
+        )
+    items.sort(key=lambda x: x.get("total_posts", 0), reverse=True)
+
+    return {"range": {"from": start.date().isoformat(), "to": end.date().isoformat()}, "items": items}
+
+
 @router.get("/trends")
 def get_trends(user=Depends(get_current_user)):
     repo = get_repo()
@@ -47,15 +329,123 @@ def get_trends(user=Depends(get_current_user)):
             if pd.notna(pid):
                 name_map[int(pid)] = str(row.get("name"))
 
+    if daily_df.empty or not {"platform_id", "metric_date", "total_posts"}.issubset(daily_df.columns):
+        return {"dates": [], "series": []}
+
+    daily_df["metric_date"] = pd.to_datetime(daily_df["metric_date"], errors="coerce")
+    daily_df = daily_df.dropna(subset=["metric_date"])
+    if daily_df.empty:
+        return {"dates": [], "series": []}
+
+    # Build unified date axis
+    daily_df["date_str"] = daily_df["metric_date"].dt.strftime("%Y-%m-%d")
+    dates = sorted(daily_df["date_str"].dropna().unique().tolist())
+    date_idx = {d: i for i, d in enumerate(dates)}
+
     series = []
-    if not daily_df.empty and {"platform_id", "metric_date", "total_posts"}.issubset(daily_df.columns):
-        daily_df["metric_date"] = pd.to_datetime(daily_df["metric_date"], errors="coerce")
-        grouped = daily_df.sort_values("metric_date").groupby("platform_id")
-        for pid, g in grouped:
-            vals = pd.to_numeric(g["total_posts"], errors="coerce").fillna(0).astype(int).tolist()
-            if vals:
-                series.append({"name": name_map.get(int(pid), f"platform_{pid}"), "data": vals})
-    return {"series": series}
+    grouped = daily_df.groupby("platform_id")
+    for pid, g in grouped:
+        data = [0] * len(dates)
+        for _, r in g.iterrows():
+            ds = r.get("date_str")
+            if ds not in date_idx:
+                continue
+            val = pd.to_numeric(r.get("total_posts"), errors="coerce")
+            data[date_idx[ds]] = int(val) if pd.notna(val) else 0
+        series.append({"name": name_map.get(int(pid), f"platform_{pid}"), "data": data})
+    return {"dates": dates, "series": series}
+
+
+@router.get("/sentiment_trends")
+def get_sentiment_trends(
+    brand_ids: Optional[List[int]] = Query(None),
+    project_ids: Optional[List[int]] = Query(None, description="(Deprecated) 1-4 project ids"),
+    days: int = Query(14, ge=1, le=365),
+    start_date: Optional[str] = Query(None, description="Custom date range start (YYYY-MM-DD)."),
+    end_date: Optional[str] = Query(None, description="Custom date range end (YYYY-MM-DD)."),
+    metric: str = Query("negative_ratio"),
+    user=Depends(get_current_user),
+):
+    """
+    Trend lines by brand, aggregated across projects/platforms per day.
+    """
+    # Backward-compatible input: old frontend used `project_ids`.
+    if not brand_ids and project_ids:
+        proj_brand = _project_brand_map(get_repo())
+        derived = []
+        for pid in project_ids:
+            try:
+                bid = proj_brand.get(int(pid))
+                if bid is not None:
+                    derived.append(int(bid))
+            except Exception:
+                continue
+        brand_ids = derived
+
+    if not brand_ids:
+        raise HTTPException(status_code=422, detail="brand_ids is required (or provide deprecated project_ids)")
+
+    brand_ids = [int(x) for x in brand_ids][:4]
+    if metric not in {"negative_ratio", "positive_ratio", "spam_ratio"}:
+        metric = "negative_ratio"
+    repo = get_repo()
+    start, end = _parse_range(days, start_date, end_date)
+    project_ids, project_brand = _projects_for_brands(repo, brand_ids)
+    if not project_ids:
+        return {"dates": [], "series": []}
+    daily_df = repo.query("daily_metric")
+    if daily_df.empty or not {"project_id", "metric_date"}.issubset(daily_df.columns):
+        return {"dates": [], "series": []}
+
+    daily_df["metric_date"] = pd.to_datetime(daily_df.get("metric_date"), errors="coerce")
+    daily_df = daily_df.dropna(subset=["metric_date"])
+    daily_df = daily_df[(daily_df["metric_date"] >= start) & (daily_df["metric_date"] <= end)]
+    daily_df["date_str"] = daily_df["metric_date"].dt.strftime("%Y-%m-%d")
+    daily_df = _coerce_daily_metric_numeric(daily_df)
+    daily_df = daily_df[daily_df["project_id"].astype(int).isin(project_ids)]
+    if daily_df.empty:
+        return {"dates": [], "series": []}
+
+    dates = sorted(daily_df["date_str"].dropna().unique().tolist())
+    date_idx = {d: i for i, d in enumerate(dates)}
+    brand_map = _brand_name_map(repo)
+
+    def row_value(row: pd.Series) -> float:
+        def n(key: str) -> float:
+            v = pd.to_numeric(row.get(key), errors="coerce")
+            return float(v) if pd.notna(v) else 0.0
+
+        total = n("total_posts")
+        valid = n("valid_posts")
+        spam = n("spam_posts")
+        pos = n("pos_posts")
+        neu = n("neu_posts")
+        neg = n("neg_posts")
+        denom = max(pos + neu + neg, 0.0)
+        if metric == "negative_ratio":
+            return round((neg / denom), 4) if denom else 0.0
+        if metric == "positive_ratio":
+            return round((pos / denom), 4) if denom else 0.0
+        # spam_ratio
+        return round((spam / valid), 4) if valid else 0.0
+
+    series = []
+    metric_cols = ["total_posts", "valid_posts", "spam_posts", "pos_posts", "neu_posts", "neg_posts"]
+    daily_df["brand_id"] = daily_df["project_id"].apply(lambda x: project_brand.get(int(x), None))
+    for bid, g in daily_df.dropna(subset=["brand_id"]).groupby("brand_id"):
+        bid_int = int(bid)
+        if bid_int not in brand_ids:
+            continue
+        data = [0.0] * len(dates)
+        cols = [c for c in metric_cols if c in g.columns]
+        grouped = g.groupby("date_str")[cols].sum().reset_index()
+        for _, r in grouped.iterrows():
+            ds = r.get("date_str")
+            if ds not in date_idx:
+                continue
+            data[date_idx[ds]] = row_value(r)
+        series.append({"brand_id": bid_int, "name": brand_map.get(bid_int, f"brand_{bid_int}"), "data": data})
+    return {"dates": dates, "series": series, "metric": metric}
 
 
 @router.get("/ranking")
@@ -82,6 +472,61 @@ def get_ranking(user=Depends(get_current_user)):
         rows.append({"product": name_map.get(int(pid), f"platform_{pid}"), "score": score})
 
     rows.sort(key=lambda x: x["score"], reverse=True)
+    return rows
+
+
+@router.get("/competitor_ranking")
+def get_competitor_ranking(
+    brand_ids: Optional[List[int]] = Query(None),
+    days: int = Query(7, ge=1, le=365),
+    start_date: Optional[str] = Query(None, description="Custom date range start (YYYY-MM-DD)."),
+    end_date: Optional[str] = Query(None, description="Custom date range end (YYYY-MM-DD)."),
+    user=Depends(get_current_user),
+):
+    """
+    Ranking by brand. "Heat" is a simple composite score.
+    """
+    repo = get_repo()
+    start, end = _parse_range(days, start_date, end_date)
+    daily_df = repo.query("daily_metric")
+    if daily_df.empty or "project_id" not in daily_df.columns:
+        return []
+    daily_df["metric_date"] = pd.to_datetime(daily_df.get("metric_date"), errors="coerce")
+    daily_df = daily_df.dropna(subset=["metric_date"])
+    daily_df = daily_df[(daily_df["metric_date"] >= start) & (daily_df["metric_date"] <= end)]
+    daily_df = _coerce_daily_metric_numeric(daily_df)
+    if daily_df.empty:
+        return []
+
+    brand_map = _brand_name_map(repo)
+    project_brand = _project_brand_map(repo)
+    rows: List[Dict[str, Any]] = []
+    daily_df["brand_id"] = daily_df["project_id"].apply(lambda x: project_brand.get(int(x), None))
+    if brand_ids:
+        allowed = set(int(x) for x in brand_ids[:4])
+        daily_df = daily_df[daily_df["brand_id"].isin(list(allowed))]
+    for bid, g in daily_df.dropna(subset=["brand_id"]).groupby("brand_id"):
+        bid_int = int(bid)
+        total = float(pd.to_numeric(g.get("total_posts"), errors="coerce").fillna(0).sum())
+        spam = float(pd.to_numeric(g.get("spam_posts"), errors="coerce").fillna(0).sum())
+        neg = float(pd.to_numeric(g.get("neg_posts"), errors="coerce").fillna(0).sum())
+        pos = float(pd.to_numeric(g.get("pos_posts"), errors="coerce").fillna(0).sum())
+        neu = float(pd.to_numeric(g.get("neu_posts"), errors="coerce").fillna(0).sum())
+        heat = max(total - 0.5 * spam + 0.2 * abs(neg - pos), 0.0)
+        valid = float(pd.to_numeric(g.get("valid_posts"), errors="coerce").fillna(0).sum())
+        denom_sent = max(pos + neu + neg, 0.0)
+        rows.append(
+            {
+                "brand_id": bid_int,
+                "name": brand_map.get(bid_int, f"brand_{bid_int}"),
+                "heat": int(round(heat)),
+                "total_posts": int(total),
+                "spam_posts": int(spam),
+                "negative_ratio": round((neg / denom_sent), 4) if denom_sent else 0.0,
+                "spam_ratio": round((spam / valid), 4) if valid else 0.0,
+            }
+        )
+    rows.sort(key=lambda x: x["heat"], reverse=True)
     return rows
 
 
@@ -116,4 +561,98 @@ def get_alerts(user=Depends(get_current_user)):
                     "reason": f"负面占比偏高({ratio:.2%})",
                 }
             )
+    return alerts
+
+
+@router.get("/sentiment_alerts")
+def get_sentiment_alerts(
+    brand_ids: Optional[List[int]] = Query(None),
+    days: int = Query(14, ge=2, le=365),
+    start_date: Optional[str] = Query(None, description="Custom date range start (YYYY-MM-DD)."),
+    end_date: Optional[str] = Query(None, description="Custom date range end (YYYY-MM-DD)."),
+    min_total: int = Query(10, ge=0, le=100000),
+    user=Depends(get_current_user),
+):
+    """
+    Alert on sentiment ratio spikes (positive or negative) between the latest two days.
+    """
+    repo = get_repo()
+    start, end = _parse_range(days, start_date, end_date)
+    daily_df = repo.query("daily_metric")
+    if daily_df.empty or not {"project_id", "metric_date"}.issubset(daily_df.columns):
+        return []
+
+    daily_df["metric_date"] = pd.to_datetime(daily_df.get("metric_date"), errors="coerce")
+    daily_df = daily_df.dropna(subset=["metric_date"])
+    daily_df = daily_df[(daily_df["metric_date"] >= start) & (daily_df["metric_date"] <= end)]
+    daily_df = _coerce_daily_metric_numeric(daily_df)
+    if daily_df.empty:
+        return []
+
+    daily_df["date_str"] = daily_df["metric_date"].dt.strftime("%Y-%m-%d")
+    all_dates = sorted(daily_df["date_str"].unique().tolist())
+    if len(all_dates) < 2:
+        return []
+    d2, d1 = all_dates[-2], all_dates[-1]  # previous, latest
+
+    brand_map = _brand_name_map(repo)
+    project_brand = _project_brand_map(repo)
+    alerts: List[Dict[str, Any]] = []
+
+    daily_df["brand_id"] = daily_df["project_id"].apply(lambda x: project_brand.get(int(x), None))
+    if brand_ids:
+        allowed = set(int(x) for x in brand_ids[:4])
+        daily_df = daily_df[daily_df["brand_id"].isin(list(allowed))]
+
+    for bid, g in daily_df.dropna(subset=["brand_id"]).groupby("brand_id"):
+        bid_int = int(bid)
+        metric_cols = ["total_posts", "valid_posts", "spam_posts", "pos_posts", "neu_posts", "neg_posts"]
+        cols = [c for c in metric_cols if c in g.columns]
+        agg = g.groupby("date_str")[cols].sum()
+        if d1 not in agg.index or d2 not in agg.index:
+            continue
+
+        def ratios(row: pd.Series) -> Tuple[float, float, int]:
+            pos = float(row.get("pos_posts") or 0)
+            neu = float(row.get("neu_posts") or 0)
+            neg = float(row.get("neg_posts") or 0)
+            total = int(row.get("total_posts") or 0)
+            denom = max(pos + neu + neg, 0.0)
+            pos_r = (pos / denom) if denom else 0.0
+            neg_r = (neg / denom) if denom else 0.0
+            return pos_r, neg_r, total
+
+        pos2, neg2, tot2 = ratios(agg.loc[d2])
+        pos1, neg1, tot1 = ratios(agg.loc[d1])
+
+        # only alert when volume is meaningful
+        if tot1 < int(min_total):
+            continue
+
+        neg_delta = neg1 - neg2
+        pos_delta = pos1 - pos2
+
+        if abs(neg_delta) >= 0.2:
+            level = "high" if abs(neg_delta) >= 0.35 else "medium"
+            alerts.append(
+                {
+                    "level": level,
+                    "brand_id": bid_int,
+                    "product": brand_map.get(bid_int, f"brand_{bid_int}"),
+                    "type": "negative_spike" if neg_delta > 0 else "negative_drop",
+                    "reason": f"负面占比变化 {neg_delta:+.1%}（{d2}→{d1}）",
+                }
+            )
+        if abs(pos_delta) >= 0.2:
+            level = "high" if abs(pos_delta) >= 0.35 else "medium"
+            alerts.append(
+                {
+                    "level": level,
+                    "brand_id": bid_int,
+                    "product": brand_map.get(bid_int, f"brand_{bid_int}"),
+                    "type": "positive_spike" if pos_delta > 0 else "positive_drop",
+                    "reason": f"正面占比变化 {pos_delta:+.1%}（{d2}→{d1}）",
+                }
+            )
+
     return alerts
