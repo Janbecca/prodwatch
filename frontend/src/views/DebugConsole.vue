@@ -1,6 +1,7 @@
 <script setup>
 import { ref } from 'vue'
 import api from '../api/axios'
+import PageHeader from '../components/PageHeader.vue'
 
 const sources = ref([])
 const sourceDetail = ref(null)
@@ -83,7 +84,7 @@ loadReportSummary()
 
 <template>
   <section class="page">
-    <el-page-header content="接口联调控制台" />
+    <PageHeader content="接口联调控制台" />
     <div class="title-row">
       <h2>调试控制台</h2>
       <span v-if="loading">请求中...</span>

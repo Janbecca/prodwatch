@@ -46,6 +46,36 @@ def _rule_based_sentiment(text: str) -> Dict[str, Any]:
     }
 
 
+def _try_parse_json_object(text: str) -> Optional[Dict[str, Any]]:
+    if not text:
+        return None
+    s = str(text).strip()
+
+    if s.startswith("```"):
+        s = s.replace("```json", "```").replace("```JSON", "```")
+        parts = [p.strip() for p in s.split("```") if p.strip()]
+        if parts:
+            s = parts[0]
+
+    try:
+        obj = json.loads(s)
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        pass
+
+    start = s.find("{")
+    end = s.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        try:
+            obj = json.loads(s[start : end + 1])
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            return None
+    return None
+
+
 def analyze_sentiment(clean_df: pd.DataFrame, *, model: str = "rule-based") -> int:
     """
     Input: post_clean dataframe (must include columns: id, project_id, clean_text, is_valid).
@@ -89,17 +119,32 @@ def analyze_sentiment(clean_df: pd.DataFrame, *, model: str = "rule-based") -> i
             data = _rule_based_sentiment(text)
         else:
             prompt = f'请输出 JSON：{{"polarity","confidence","intensity","emotions"}}。内容：{text}'
-            resp = dashscope.Generation.call(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.2,
+            prompt = (
+                "请只输出 JSON 对象，不要输出多余文字。格式示例："
+                '{"polarity":"positive|neutral|negative","confidence":0.0,"intensity":0.0,"emotions":{}}'
+                f"\n内容：{text}"
             )
-            output = (
-                resp.output.text
-                if hasattr(resp, "output") and hasattr(resp.output, "text")
-                else resp["output"]["text"]
-            )
-            data = json.loads(output)
+            try:
+                resp = dashscope.Generation.call(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.2,
+                )
+                output = (
+                    resp.output.text
+                    if hasattr(resp, "output") and hasattr(resp.output, "text")
+                    else resp.get("output", {}).get("text")  # type: ignore[union-attr]
+                )
+                parsed = _try_parse_json_object(str(output or ""))
+                data = parsed if parsed is not None else _rule_based_sentiment(text)
+            except Exception:
+                data = _rule_based_sentiment(text)
+
+        emotions = data.get("emotions")
+        if isinstance(emotions, str):
+            data["emotions"] = _try_parse_json_object(emotions) or {}
+        elif emotions is None or not isinstance(emotions, dict):
+            data["emotions"] = {}
 
         repo.insert(
             "sentiment_result",
@@ -116,4 +161,3 @@ def analyze_sentiment(clean_df: pd.DataFrame, *, model: str = "rule-based") -> i
         inserted += 1
 
     return inserted
-

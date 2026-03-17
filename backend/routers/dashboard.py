@@ -100,9 +100,22 @@ def _project_name_map(repo) -> Dict[int, str]:
 
 
 def _project_brand_map(repo) -> Dict[int, Optional[int]]:
-    df = repo.query("monitor_project")
+    join_df = repo.query("monitor_project_brand")
     mapping: Dict[int, Optional[int]] = {}
-    if df.empty or "id" not in df.columns:
+    if join_df is not None and not join_df.empty and {"project_id", "brand_id"}.issubset(join_df.columns):
+        join_df = join_df.copy()
+        join_df["project_id"] = pd.to_numeric(join_df["project_id"], errors="coerce")
+        join_df["brand_id"] = pd.to_numeric(join_df["brand_id"], errors="coerce")
+        join_df = join_df.dropna(subset=["project_id", "brand_id"])
+        join_df["project_id"] = join_df["project_id"].astype(int)
+        join_df["brand_id"] = join_df["brand_id"].astype(int)
+        for pid, g in join_df.groupby("project_id"):
+            bids = sorted({int(x) for x in g["brand_id"].tolist() if x is not None})
+            mapping[int(pid)] = bids[0] if bids else None
+        return mapping
+
+    df = repo.query("monitor_project")
+    if df is None or df.empty or "id" not in df.columns:
         return mapping
     for _, row in df.iterrows():
         pid = pd.to_numeric(row.get("id"), errors="coerce")
@@ -139,10 +152,31 @@ def _projects_for_brands(repo, brand_ids: List[int]) -> Tuple[List[int], Dict[in
     """
     Returns (project_ids, project_id -> brand_id map) for the given brand ids.
     """
+    brand_set = set(int(x) for x in brand_ids if x is not None)
+
+    join_df = repo.query("monitor_project_brand")
+    if join_df is not None and not join_df.empty and {"project_id", "brand_id"}.issubset(join_df.columns):
+        join_df = join_df.copy()
+        join_df["project_id"] = pd.to_numeric(join_df["project_id"], errors="coerce")
+        join_df["brand_id"] = pd.to_numeric(join_df["brand_id"], errors="coerce")
+        join_df = join_df.dropna(subset=["project_id", "brand_id"])
+        join_df["project_id"] = join_df["project_id"].astype(int)
+        join_df["brand_id"] = join_df["brand_id"].astype(int)
+
+        project_ids: List[int] = []
+        project_brand: Dict[int, int] = {}
+        for _, row in join_df.iterrows():
+            pid = int(row["project_id"])
+            bid = int(row["brand_id"])
+            project_brand[pid] = bid
+            if bid in brand_set:
+                project_ids.append(pid)
+        return sorted(list(set(project_ids))), project_brand
+
     projects_df = repo.query("monitor_project")
     project_ids: List[int] = []
     project_brand: Dict[int, int] = {}
-    if projects_df.empty or "id" not in projects_df.columns:
+    if projects_df is None or projects_df.empty or "id" not in projects_df.columns:
         return project_ids, project_brand
 
     for _, row in projects_df.iterrows():
@@ -151,7 +185,7 @@ def _projects_for_brands(repo, brand_ids: List[int]) -> Tuple[List[int], Dict[in
         if pid is None or bid is None:
             continue
         project_brand[pid] = bid
-        if bid in set(int(x) for x in brand_ids):
+        if bid in brand_set:
             project_ids.append(pid)
     return project_ids, project_brand
 
@@ -181,6 +215,7 @@ def get_options(user=Depends(get_current_user)):
     brand_df = repo.query("brand")
     projects_df = repo.query("monitor_project")
     platforms_df = repo.query("platform")
+    project_brand_df = repo.query("monitor_project_brand")
 
     brands: List[Dict[str, Any]] = []
     if not brand_df.empty:
@@ -192,16 +227,33 @@ def get_options(user=Depends(get_current_user)):
 
     projects: List[Dict[str, Any]] = []
     if not projects_df.empty:
+        proj_brand_map: Dict[int, List[int]] = {}
+        if project_brand_df is not None and not project_brand_df.empty and {"project_id", "brand_id"}.issubset(project_brand_df.columns):
+            tmp = project_brand_df.copy()
+            tmp["project_id"] = pd.to_numeric(tmp["project_id"], errors="coerce")
+            tmp["brand_id"] = pd.to_numeric(tmp["brand_id"], errors="coerce")
+            tmp = tmp.dropna(subset=["project_id", "brand_id"])
+            tmp["project_id"] = tmp["project_id"].astype(int)
+            tmp["brand_id"] = tmp["brand_id"].astype(int)
+            for pid, g in tmp.groupby("project_id"):
+                proj_brand_map[int(pid)] = sorted({int(x) for x in g["brand_id"].tolist() if x is not None})
+
         for _, row in projects_df.iterrows():
             pid = _safe_int(row.get("id"))
             if pid is None:
                 continue
+            desc = row.get("description")
+            if desc is None or (isinstance(desc, float) and pd.isna(desc)):
+                desc = None
+            legacy_bid = _safe_int(row.get("brand_id"))
+            brand_ids = proj_brand_map.get(int(pid), ([] if legacy_bid is None else [legacy_bid]))
             projects.append(
                 {
                     "id": pid,
-                    "brand_id": _safe_int(row.get("brand_id")),
+                    "brand_ids": brand_ids,
                     "name": str(row.get("name") or f"project_{pid}"),
-                    "description": row.get("description"),
+                    "product_category": (None if pd.isna(row.get("product_category")) else row.get("product_category")),
+                    "description": desc,
                     "is_active": int(pd.to_numeric(row.get("is_active"), errors="coerce") or 0),
                 }
             )
@@ -656,3 +708,112 @@ def get_sentiment_alerts(
             )
 
     return alerts
+
+
+@router.get("/keyword_frequencies")
+def get_keyword_frequencies(
+    brand_ids: Optional[List[int]] = Query(None, description="Filter by brand ids (repeatable)."),
+    days: int = Query(14, ge=1, le=365),
+    start_date: Optional[str] = Query(None, description="Custom date range start (YYYY-MM-DD)."),
+    end_date: Optional[str] = Query(None, description="Custom date range end (YYYY-MM-DD)."),
+    top_n: int = Query(12, ge=3, le=50),
+    user=Depends(get_current_user),
+):
+    """
+    Keyword frequency statistics from `post_raw.keyword_id` (joined to `monitor_keyword`).
+    Returns the top keywords overall and a per-brand breakdown for charting.
+    """
+    repo = get_repo()
+    start, end = _parse_range(days, start_date, end_date)
+
+    df = repo.query("post_raw")
+    if df is None or df.empty:
+        return {"top_keywords": [], "brands": [], "range": {"from": start.date().isoformat(), "to": end.date().isoformat()}}
+
+    df = df.copy()
+
+    # Ensure publish_time is datetime for time filtering.
+    if "publish_time" in df.columns:
+        df["publish_time"] = pd.to_datetime(df["publish_time"], errors="coerce")
+        df = df.dropna(subset=["publish_time"])
+        df = df[(df["publish_time"] >= start) & (df["publish_time"] <= end)]
+    if df.empty:
+        return {"top_keywords": [], "brands": [], "range": {"from": start.date().isoformat(), "to": end.date().isoformat()}}
+
+    # Normalize keyword_id.
+    if "keyword_id" not in df.columns:
+        return {"top_keywords": [], "brands": [], "range": {"from": start.date().isoformat(), "to": end.date().isoformat()}}
+    df["keyword_id"] = pd.to_numeric(df["keyword_id"], errors="coerce")
+    df = df.dropna(subset=["keyword_id"])
+    if df.empty:
+        return {"top_keywords": [], "brands": [], "range": {"from": start.date().isoformat(), "to": end.date().isoformat()}}
+    df["keyword_id"] = df["keyword_id"].astype(int)
+
+    # Normalize brand_id (prefer stored brand_id; fallback to project -> brand mapping for legacy rows).
+    if "brand_id" in df.columns:
+        df["brand_id"] = pd.to_numeric(df["brand_id"], errors="coerce")
+    else:
+        df["brand_id"] = None
+
+    if df["brand_id"].isna().all() and "project_id" in df.columns:
+        project_brand = _project_brand_map(repo)
+        df["project_id"] = pd.to_numeric(df["project_id"], errors="coerce")
+        mask = pd.notna(df["project_id"])
+        df.loc[mask, "brand_id"] = df.loc[mask, "project_id"].astype(int).map(project_brand)
+
+    df["brand_id"] = pd.to_numeric(df["brand_id"], errors="coerce")
+    df = df.dropna(subset=["brand_id"])
+    if df.empty:
+        return {"top_keywords": [], "brands": [], "range": {"from": start.date().isoformat(), "to": end.date().isoformat()}}
+    df["brand_id"] = df["brand_id"].astype(int)
+
+    if brand_ids:
+        allowed = set(int(x) for x in brand_ids if x is not None)
+        df = df[df["brand_id"].isin(list(allowed))]
+        if df.empty:
+            return {"top_keywords": [], "brands": [], "range": {"from": start.date().isoformat(), "to": end.date().isoformat()}}
+
+    # keyword_id -> keyword
+    kw_df = repo.query("monitor_keyword")
+    if kw_df is None or kw_df.empty or not {"id", "keyword"}.issubset(kw_df.columns):
+        return {"top_keywords": [], "brands": [], "range": {"from": start.date().isoformat(), "to": end.date().isoformat()}}
+    kw_df = kw_df.copy()
+    kw_df["id"] = pd.to_numeric(kw_df["id"], errors="coerce")
+    kw_df = kw_df.dropna(subset=["id"])
+    kw_df["id"] = kw_df["id"].astype(int)
+    kw_map = dict(zip(kw_df["id"].tolist(), kw_df["keyword"].tolist()))
+    df["keyword"] = df["keyword_id"].map(kw_map)
+    df = df.dropna(subset=["keyword"])
+    if df.empty:
+        return {"top_keywords": [], "brands": [], "range": {"from": start.date().isoformat(), "to": end.date().isoformat()}}
+
+    # Overall top keywords.
+    overall = df.groupby("keyword").size().sort_values(ascending=False)
+    overall = overall.head(int(top_n))
+    top_keywords = [{"keyword": str(k), "count": int(v)} for k, v in overall.items()]
+    top_list = [str(x["keyword"]) for x in top_keywords]
+    top_set = set(top_list)
+
+    # Per-brand counts for top keywords.
+    df2 = df[df["keyword"].astype(str).isin(list(top_set))]
+    brand_map = _brand_name_map(repo)
+    brands_out: List[Dict[str, Any]] = []
+    if not df2.empty:
+        pivot = df2.groupby(["brand_id", "keyword"]).size().reset_index(name="count")
+        for bid, g in pivot.groupby("brand_id"):
+            bid_int = int(bid)
+            item_map = {str(r["keyword"]): int(r["count"]) for _, r in g.iterrows()}
+            brands_out.append(
+                {
+                    "brand_id": bid_int,
+                    "brand_name": brand_map.get(bid_int, f"brand_{bid_int}"),
+                    "items": [{"keyword": k, "count": int(item_map.get(k, 0))} for k in top_list],
+                }
+            )
+
+    brands_out.sort(key=lambda x: x.get("brand_name") or "")
+    return {
+        "top_keywords": top_keywords,
+        "brands": brands_out,
+        "range": {"from": start.date().isoformat(), "to": end.date().isoformat()},
+    }

@@ -3,14 +3,32 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import * as echarts from 'echarts'
 import api from '../api/axios'
+import PageHeader from '../components/PageHeader.vue'
+import { useProjectsStore } from '../stores/projects'
 
 const router = useRouter()
+const projectsStore = useProjectsStore()
 
 const loading = ref(false)
 const error = ref('')
 
 const options = ref({ brands: [], projects: [], platforms: [] })
 const selectedBrandIds = ref([])
+
+const enabledProjects = computed(() => projectsStore.enabledProjects || [])
+const activeProjectId = computed({
+  get: () => projectsStore.activeProjectId,
+  set: (v) => projectsStore.setActiveProjectId(v),
+})
+const activeProject = computed(() => projectsStore.activeProject)
+
+const visibleBrands = computed(() => {
+  const all = options.value?.brands || []
+  const p = activeProject.value
+  if (!p) return all
+  const allow = new Set((p.brand_ids || []).map((x) => Number(x)))
+  return all.filter((b) => allow.has(Number(b.id)))
+})
 
 // time filter (cascader-like)
 const timePopoverVisible = ref(false)
@@ -23,9 +41,12 @@ const trendMetric = ref('negative_ratio') // negative_ratio | positive_ratio | s
 const overview = ref(null)
 const trends = ref({ dates: [], series: [], metric: trendMetric.value })
 const alerts = ref([])
+const keywordFreq = ref({ top_keywords: [], brands: [], range: null })
 
 const chartEl = ref(null)
 let chart = null
+const keywordChartEl = ref(null)
+let keywordChart = null
 let timer = null
 
 const canCompare = computed(() => selectedBrandIds.value.length >= 2)
@@ -66,6 +87,21 @@ const clampSelectedBrands = () => {
   }
   if (selectedBrandIds.value.length === 0 && (options.value.brands || []).length) {
     selectedBrandIds.value = [options.value.brands[0].id]
+  }
+}
+
+let suppressAutoFetchAll = false
+
+const applyProjectToBrands = async () => {
+  const p = activeProject.value
+  if (!p) return
+  const ids = (p.brand_ids || []).map((x) => Number(x)).filter((x) => Number.isFinite(x))
+  suppressAutoFetchAll = true
+  try {
+    selectedBrandIds.value = ids.slice(0, 4)
+    await fetchAll()
+  } finally {
+    suppressAutoFetchAll = false
   }
 }
 
@@ -123,16 +159,18 @@ const fetchAll = async () => {
     if (!isCustomRangeReady.value) return
 
     const baseParams = { brand_ids: selectedBrandIds.value, ...timeQuery.value }
-    const [o, t, a] = await Promise.all([
+    const [o, t, a, k] = await Promise.all([
       api.get('/api/dashboard/overview', { params: buildParams(baseParams) }),
       api.get('/api/dashboard/sentiment_trends', {
         params: buildParams({ ...baseParams, metric: trendMetric.value }),
       }),
       api.get('/api/dashboard/sentiment_alerts', { params: buildParams(baseParams) }),
+      api.get('/api/dashboard/keyword_frequencies', { params: buildParams({ ...baseParams, top_n: 12 }) }),
     ])
     overview.value = o.data
     trends.value = t.data
     alerts.value = a.data
+    keywordFreq.value = k.data
   } catch (e) {
     error.value = formatApiError(e) || '加载仪表盘数据失败'
   } finally {
@@ -176,6 +214,52 @@ const buildChartOption = () => {
   }
 }
 
+const buildKeywordChartOption = () => {
+  const top = keywordFreq.value?.top_keywords || []
+  const categories = top.map((x) => x.keyword).filter((x) => x != null && String(x).trim() !== '')
+  const brands = keywordFreq.value?.brands || []
+  const series = (brands || []).map((b) => {
+    const itemMap = new Map((b.items || []).map((x) => [String(x.keyword), Number(x.count) || 0]))
+    return {
+      name: b.brand_name || (b.brand_id != null ? `#${b.brand_id}` : '品牌'),
+      type: 'bar',
+      stack: 'total',
+      emphasis: { focus: 'series' },
+      data: categories.map((k) => itemMap.get(String(k)) || 0),
+    }
+  })
+
+  return {
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+    legend: { top: 6 },
+    grid: { left: 40, right: 18, top: 46, bottom: 64 },
+    xAxis: { type: 'category', data: categories, axisLabel: { rotate: 25 } },
+    yAxis: { type: 'value' },
+    series,
+    title: { text: '关键词监控（Top 12）', left: 8, top: 6, textStyle: { fontSize: 14 } },
+  }
+}
+
+const renderKeywordChart = () => {
+  if (!keywordChartEl.value) return
+  if (!keywordChart) keywordChart = echarts.init(keywordChartEl.value)
+  const hasData = (keywordFreq.value?.top_keywords || []).length > 0
+  if (!hasData) {
+    keywordChart.clear()
+    keywordChart.setOption({
+      title: { text: '关键词监控', left: 8, top: 6, textStyle: { fontSize: 14 } },
+      graphic: {
+        type: 'text',
+        left: 'center',
+        top: 'middle',
+        style: { text: '暂无关键词数据', fill: '#6b7280', fontSize: 13 },
+      },
+    })
+    return
+  }
+  keywordChart.setOption(buildKeywordChartOption(), true)
+}
+
 const renderChart = () => {
   if (!chartEl.value) return
   if (!chart) chart = echarts.init(chartEl.value)
@@ -184,9 +268,11 @@ const renderChart = () => {
 
 const resizeChart = () => {
   if (chart) chart.resize()
+  if (keywordChart) keywordChart.resize()
 }
 
 watch([selectedBrandIds, timeKey, trendMetric], async () => {
+  if (suppressAutoFetchAll) return
   await fetchAll()
 })
 
@@ -197,14 +283,25 @@ watch([customStart, customEnd], async () => {
 })
 
 watch(trends, () => renderChart(), { deep: true })
+watch(keywordFreq, () => renderKeywordChart(), { deep: true })
 
 onMounted(async () => {
+  await projectsStore.fetch()
   await fetchOptions()
-  await fetchAll()
+  if (activeProject.value) await applyProjectToBrands()
+  else await fetchAll()
   renderChart()
+  renderKeywordChart()
   startPolling()
   window.addEventListener('resize', resizeChart)
 })
+
+watch(
+  () => projectsStore.activeProjectId,
+  async () => {
+    await applyProjectToBrands()
+  }
+)
 
 onBeforeUnmount(() => {
   stopPolling()
@@ -212,6 +309,10 @@ onBeforeUnmount(() => {
   if (chart) {
     chart.dispose()
     chart = null
+  }
+  if (keywordChart) {
+    keywordChart.dispose()
+    keywordChart = null
   }
 })
 
@@ -257,7 +358,10 @@ const onPickCustomEnd = (v) => {
 const goPostsForBrands = (brandIds) => {
   const ids = (brandIds || []).map((x) => Number(x)).filter((x) => Number.isFinite(x))
   if (!ids.length) return
-  router.push({ path: '/posts', query: { mode: 'all', brand_ids: ids, ...timeQuery.value } })
+  router.push({
+    path: '/posts',
+    query: { mode: 'all', project_id: projectsStore.activeProjectId || undefined, brand_ids: ids, ...timeQuery.value },
+  })
 }
 
 const onOverviewRowClick = (row) => {
@@ -267,7 +371,7 @@ const onOverviewRowClick = (row) => {
 
 <template>
   <section class="page">
-    <el-page-header content="竞品舆情仪表盘" />
+    <PageHeader content="竞品舆情仪表盘" />
 
     <div class="topbar">
     
@@ -280,6 +384,23 @@ const onOverviewRowClick = (row) => {
       <div class="toolbar">
         <div class="left">
           <div class="field">
+            <div class="label">启用项目</div>
+            <el-select
+              v-model="activeProjectId"
+              placeholder="请选择启用项目"
+              style="width: 220px; max-width: 100%"
+              :disabled="enabledProjects.length === 0"
+            >
+              <el-option
+                v-for="p in enabledProjects"
+                :key="p.id"
+                :label="p.product_category ? `${p.name}（${p.product_category}）` : p.name"
+                :value="p.id"
+              />
+            </el-select>
+          </div>
+
+          <div class="field">
             <div class="label">品牌（最多 4 个；多选自动对比）</div>
             <el-select
               v-model="selectedBrandIds"
@@ -288,9 +409,10 @@ const onOverviewRowClick = (row) => {
               collapse-tags
               collapse-tags-tooltip
               placeholder="选择品牌"
-              style="width: 360px"
+              style="width: 360px; max-width: 100%"
+              :disabled="enabledProjects.length === 0"
             >
-              <el-option v-for="b in options.brands" :key="b.id" :label="b.name" :value="b.id" />
+              <el-option v-for="b in visibleBrands" :key="b.id" :label="b.name" :value="b.id" />
             </el-select>
           </div>
 
@@ -301,7 +423,7 @@ const onOverviewRowClick = (row) => {
                 <el-input
                   readonly
                   :model-value="timeText"
-                  style="width: 220px"
+                  style="width: 220px; max-width: 100%"
                   placeholder="选择时间范围"
                   @click="timePopoverVisible = !timePopoverVisible"
                 />
@@ -427,6 +549,11 @@ const onOverviewRowClick = (row) => {
       </el-card>
 
       <el-card class="panel" shadow="hover">
+        <div class="panel-title">关键词监控</div>
+        <div ref="keywordChartEl" class="chart keyword-chart" />
+      </el-card>
+
+      <el-card class="panel" shadow="hover">
         <div class="panel-title">实时告警</div>
         <div v-if="!alerts.length" class="empty">暂无告警</div>
         <div v-else class="alerts">
@@ -487,12 +614,15 @@ const onOverviewRowClick = (row) => {
   gap: 14px;
   align-items: flex-end;
   flex-wrap: wrap;
+  min-width: 0;
 }
 
 .field {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 220px;
+  max-width: 100%;
 }
 
 .label {
@@ -526,6 +656,18 @@ const onOverviewRowClick = (row) => {
   }
 }
 
+@media (max-width: 640px) {
+  .field {
+    min-width: 100%;
+  }
+  .chart {
+    height: 300px;
+  }
+  .keyword-chart {
+    height: 280px;
+  }
+}
+
 .panel-title {
   font-weight: 600;
   margin-bottom: 10px;
@@ -549,6 +691,10 @@ const onOverviewRowClick = (row) => {
 .chart {
   width: 100%;
   height: 360px;
+}
+
+.keyword-chart {
+  height: 320px;
 }
 
 .table-scroll {

@@ -2,24 +2,21 @@ import { createRouter, createWebHistory } from 'vue-router'
 import RawPostList from './components/RawPostList.vue'
 import Login from './views/Login.vue'
 import Register from './views/Register.vue'
+import { consumeNextNavigationSource, setLastTransition } from './navContext'
 
 const Dashboard = () => import('./views/Dashboard.vue')
-const Analysis = () => import('./views/Analysis.vue')
-const Moderation = () => import('./views/Moderation.vue')
 const Reports = () => import('./views/Reports.vue')
-const Settings = () => import('./views/Settings.vue')
 const DebugConsole = () => import('./views/DebugConsole.vue')
+const Projects = () => import('./views/Projects.vue')
 
 const routes = [
   { path: '/', redirect: '/dashboard' },
   { path: '/login', component: Login },
   { path: '/register', component: Register },
   { path: '/dashboard', component: Dashboard, meta: { requiresAuth: true } },
-  { path: '/analysis', component: Analysis, meta: { requiresAuth: true } },
   { path: '/posts', component: RawPostList, meta: { requiresAuth: true } },
-  { path: '/moderation', component: Moderation, meta: { requiresAuth: true } },
   { path: '/report', component: Reports, meta: { requiresAuth: true } },
-  { path: '/settings', component: Settings, meta: { requiresAuth: true } },
+  { path: '/projects', component: Projects, meta: { requiresAuth: true } },
   { path: '/debug', component: DebugConsole, meta: { requiresAuth: true } },
 ]
 
@@ -34,6 +31,14 @@ router.beforeEach((to, _from, next) => {
     if (!token) return next('/login')
   }
   next()
+})
+
+router.afterEach((to, from) => {
+  setLastTransition({
+    toFullPath: to.fullPath,
+    fromFullPath: from?.fullPath,
+    source: consumeNextNavigationSource(),
+  })
 })
 
 export default router

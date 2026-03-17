@@ -12,7 +12,11 @@ class ExcelRepository:
         self.path = path
 
     def _read(self, sheet: str) -> pd.DataFrame:
-        return pd.read_excel(self.path, sheet_name=sheet)
+        try:
+            return pd.read_excel(self.path, sheet_name=sheet)
+        except Exception:
+            # Missing sheet or invalid workbook state: return an empty dataframe so callers can handle gracefully.
+            return pd.DataFrame()
 
     def _write(self, sheet: str, df: pd.DataFrame):
         with pd.ExcelWriter(self.path, mode="a", engine="openpyxl", if_sheet_exists="replace") as writer:

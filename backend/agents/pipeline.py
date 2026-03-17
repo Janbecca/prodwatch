@@ -273,6 +273,50 @@ def generate_report_for_run(pipeline_run_id: int) -> Optional[int]:
         spam = int(pd.to_numeric(latest.get("spam_posts"), errors="coerce").fillna(0).sum())
         summary = f"本次监控共采集/导入 {total} 条内容，其中负面 {neg} 条，疑似水军 {spam} 条。"
 
+    # Override summary using only rows belonging to this pipeline_run_id.
+    raw_df = repo.query("post_raw", {"pipeline_run_id": pipeline_run_id})
+    total_posts = int(len(raw_df)) if raw_df is not None else 0
+
+    clean_df = repo.query("post_clean", {"pipeline_run_id": pipeline_run_id})
+    valid_clean_ids = set()
+    if clean_df is not None and not clean_df.empty and "id" in clean_df.columns:
+        valid_mask = None
+        if "is_valid" in clean_df.columns:
+            valid_mask = pd.to_numeric(clean_df["is_valid"], errors="coerce").fillna(0).astype(int) == 1
+        if valid_mask is None:
+            valid_mask = pd.Series([True] * len(clean_df))
+        valid_ids = pd.to_numeric(clean_df.loc[valid_mask, "id"], errors="coerce").dropna().astype(int).tolist()
+        valid_clean_ids = set(valid_ids)
+
+    neg_posts = 0
+    spam_posts = 0
+    if valid_clean_ids:
+        sent_df = repo.query("sentiment_result")
+        if sent_df is not None and not sent_df.empty and {"post_clean_id", "polarity"}.issubset(sent_df.columns):
+            sent_df = sent_df.copy()
+            sent_df["post_clean_id"] = pd.to_numeric(sent_df["post_clean_id"], errors="coerce")
+            sent_df = sent_df.dropna(subset=["post_clean_id"])
+            sent_df["post_clean_id"] = sent_df["post_clean_id"].astype(int)
+            sent_df = sent_df[sent_df["post_clean_id"].isin(list(valid_clean_ids))]
+            if not sent_df.empty:
+                neg_posts = int((sent_df["polarity"].astype(str).str.lower() == "negative").sum())
+
+        spam_df = repo.query("spam_score")
+        if spam_df is not None and not spam_df.empty and {"post_clean_id", "label"}.issubset(spam_df.columns):
+            spam_df = spam_df.copy()
+            spam_df["post_clean_id"] = pd.to_numeric(spam_df["post_clean_id"], errors="coerce")
+            spam_df = spam_df.dropna(subset=["post_clean_id"])
+            spam_df["post_clean_id"] = spam_df["post_clean_id"].astype(int)
+            spam_df = spam_df[spam_df["post_clean_id"].isin(list(valid_clean_ids))]
+            if not spam_df.empty:
+                labels = spam_df["label"].astype(str).str.lower()
+                spam_posts = int(labels.isin(["spam", "suspect"]).sum())
+
+    if total_posts <= 0:
+        summary = f"Run {pipeline_run_id}: no posts found."
+    else:
+        summary = f"Run {pipeline_run_id}: total_posts={total_posts}, negative={neg_posts}, spam_or_suspect={spam_posts}."
+
     now = datetime.utcnow()
     report_id = _now_ts_ms()
     repo.insert(
@@ -366,4 +410,3 @@ def run_manual_pipeline(
     result = process_existing_run(run_id, sentiment_model=sentiment_model)
     result.crawled_posts = len(posts)
     return result
-

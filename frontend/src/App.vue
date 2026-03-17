@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from './stores/auth'
+import { markNextNavigationFromSidebar } from './navContext'
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -12,13 +13,17 @@ const activeMenu = computed(() => route.path)
 
 const menus = [
   { path: '/dashboard', title: '仪表盘' },
-  { path: '/analysis', title: '分析调试' },
   { path: '/posts', title: '帖子浏览' },
-  { path: '/moderation', title: '水军识别' },
   { path: '/report', title: '报告中心' },
-  { path: '/settings', title: '系统设置' },
+  { path: '/projects', title: '项目配置' },
   { path: '/debug', title: '接口控制台' },
 ]
+
+const onMenuSelect = (path) => {
+  if (!path || path === route.path) return
+  markNextNavigationFromSidebar()
+  router.push(path)
+}
 
 const logout = () => {
   auth.logout()
@@ -34,7 +39,7 @@ const logout = () => {
           <div class="brand-title">ProdWatch</div>
           <div class="brand-sub">舆情联动调试台</div>
         </div>
-        <el-menu :default-active="activeMenu" router class="menu">
+        <el-menu :default-active="activeMenu" class="menu" @select="onMenuSelect">
           <el-menu-item v-for="item in menus" :key="item.path" :index="item.path">
             {{ item.title }}
           </el-menu-item>
@@ -122,6 +127,8 @@ const logout = () => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .auth-actions {
