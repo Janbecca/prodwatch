@@ -108,6 +108,16 @@ const visibleBrands = computed(() => {
   return all.filter((b) => allow.has(Number(b.id)))
 })
 
+const visiblePlatforms = computed(() => {
+  const all = options.value?.platforms || []
+  const p = activeProject.value
+  if (!p) return all
+  const allowIds = (p.enabled_platform_ids || []).map((x) => Number(x)).filter((x) => Number.isFinite(x))
+  if (!allowIds.length) return all
+  const allow = new Set(allowIds)
+  return all.filter((pl) => allow.has(Number(pl.id)))
+})
+
 const buildParams = (obj) => {
   const params = new URLSearchParams()
   for (const [k, v] of Object.entries(obj || {})) {
@@ -128,6 +138,7 @@ const parseApiError = (e) => {
 }
 
 const queryParams = computed(() => ({
+  mode: 'all',
   project_id: activeProjectId.value || undefined,
   platform_id: platformId.value === '' ? undefined : Number(platformId.value),
   brand_ids: brandIds.value.length ? brandIds.value : undefined,
@@ -194,6 +205,37 @@ const fetchPage = async () => {
 
 const fetchAll = async () => {
   await Promise.all([fetchStats(), fetchPage()])
+}
+
+const manualRefresh = async () => {
+  if (!activeProjectId.value) return
+  loading.value = true
+  error.value = ''
+  try {
+    const p = activeProject.value
+    const ids = (brandIds.value && brandIds.value.length ? brandIds.value : (p?.brand_ids || []))
+      .map((x) => Number(x))
+      .filter((x) => Number.isFinite(x))
+
+    const platformIds = platformId.value === '' ? (activeProject.value?.enabled_platform_ids || []) : [Number(platformId.value)]
+
+    await api.post('/api/dashboard/manual_refresh', {
+      brand_ids: ids.length ? ids : undefined,
+      project_id: activeProjectId.value,
+      platform_ids: (platformIds || []).map((x) => Number(x)).filter((x) => Number.isFinite(x)),
+      max_posts_per_run: 30,
+      sentiment_model: 'rule-based',
+      trigger_type: 'manual',
+    })
+
+    page.value = 1
+    await Promise.all([fetchKeywords(), fetchAll()])
+    ElMessage.success('已刷新并生成新数据')
+  } catch (e) {
+    ElMessage.error(parseApiError(e) || '手动刷新失败')
+  } finally {
+    loading.value = false
+  }
 }
 
 const applyProjectDefaults = () => {
@@ -394,7 +436,7 @@ onBeforeUnmount(() => stopPolling())
         <div class="field">
           <div class="label">平台</div>
           <el-select v-model="platformId" clearable placeholder="全部平台" style="width: 160px; max-width: 100%">
-            <el-option v-for="p in options.platforms" :key="p.id" :label="p.name" :value="String(p.id)" />
+            <el-option v-for="p in visiblePlatforms" :key="p.id" :label="p.name" :value="String(p.id)" />
           </el-select>
         </div>
 
@@ -466,6 +508,9 @@ onBeforeUnmount(() => stopPolling())
         <div class="actions">
           <el-button type="primary" :loading="loading" :disabled="!isCustomRangeReady" @click="page = 1; fetchAll()">
             查询
+          </el-button>
+          <el-button type="primary" plain :loading="loading" :disabled="!activeProjectId" @click="manualRefresh">
+            手动刷新
           </el-button>
           <el-button :disabled="loading" @click="resetFilters">重置</el-button>
           <el-switch v-model="autoRefresh" active-text="自动刷新" />

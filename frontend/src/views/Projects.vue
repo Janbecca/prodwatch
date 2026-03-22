@@ -10,6 +10,9 @@ const error = ref('')
 
 const brands = ref([])
 const projects = ref([])
+const platforms = ref([])
+// key -> platform config rows (one per platform)
+const platformConfigsByKey = ref({})
 
 let keySeq = 0
 const makeKey = (prefix) => `${prefix}-${Date.now()}-${++keySeq}`
@@ -30,6 +33,71 @@ const brandOptions = computed(() => (brands.value || []).map((b) => ({ label: b.
 
 const activeProject = computed(() => (projects.value || []).find((p) => p.key === activeProjectKey.value) || null)
 
+const platformOptions = computed(() => platforms.value || [])
+
+const activePlatformConfigs = computed(() => {
+  const k = draft.value?.key
+  if (!k) return []
+  const rows = platformConfigsByKey.value?.[k]
+  return Array.isArray(rows) ? rows : []
+})
+
+const activePlatformIds = computed(() => {
+  return (activePlatformConfigs.value || [])
+    .map((r) => Number(r?.platform_id))
+    .filter((x) => Number.isFinite(x))
+})
+
+const hasEnabledPlatformForActive = computed(() => {
+  const rows = activePlatformConfigs.value || []
+  return rows.some((r) => Boolean(r?.is_enabled))
+})
+
+const makeDefaultPlatformConfig = (platform_id) => ({
+  platform_id: Number(platform_id),
+  is_enabled: true,
+  crawl_mode: 'schedule',
+  cron_expr: '0 5 * * *',
+  timezone: 'Asia/Shanghai',
+  max_posts_per_run: 20,
+  sentiment_model: 'rule-based',
+  query_strategy: null,
+})
+
+const normalizePlatformConfigsForDraft = (selectedIds) => {
+  const ids = (selectedIds || []).map((x) => Number(x)).filter((x) => Number.isFinite(x))
+  const cur = activePlatformConfigs.value || []
+  const byId = new Map(cur.map((r) => [Number(r?.platform_id), r]))
+
+  const next = []
+  for (const pid of ids) next.push({ ...(byId.get(pid) || makeDefaultPlatformConfig(pid)), platform_id: pid })
+
+  platformConfigsByKey.value = { ...(platformConfigsByKey.value || {}), [draft.value.key]: next }
+}
+
+const draftPlatformIds = computed({
+  get: () => activePlatformIds.value,
+  set: (v) => normalizePlatformConfigsForDraft(v),
+})
+
+const platformNameById = computed(() => {
+  const m = new Map()
+  for (const p of platformOptions.value || []) m.set(Number(p.id), p.name)
+  return m
+})
+
+const platformLabel = (id) => platformNameById.value.get(Number(id)) || (id != null ? `#${id}` : '-')
+
+const updatePlatformConfig = (platform_id, patch) => {
+  const key = draft.value?.key
+  if (!key) return
+  const rows = Array.isArray(platformConfigsByKey.value?.[key]) ? [...platformConfigsByKey.value[key]] : []
+  const idx = rows.findIndex((r) => Number(r?.platform_id) === Number(platform_id))
+  if (idx === -1) return
+  rows[idx] = { ...rows[idx], ...patch, platform_id: Number(platform_id) }
+  platformConfigsByKey.value = { ...(platformConfigsByKey.value || {}), [key]: rows }
+}
+
 const setDraftFromProject = (p) => {
   if (!p) {
     draft.value = { key: null, id: null, name: '', product_category: '', brand_keys: [], is_active: true }
@@ -43,13 +111,28 @@ const setDraftFromProject = (p) => {
     brand_keys: Array.isArray(p.brand_keys) ? [...p.brand_keys] : [],
     is_active: Boolean(p.is_active),
   }
+  if (draft.value.key && platformConfigsByKey.value?.[draft.value.key] == null) {
+    platformConfigsByKey.value = { ...(platformConfigsByKey.value || {}), [draft.value.key]: [] }
+  }
 }
 
-const deletedProjectIds = ref(new Set())
+const fetchProjectPlatforms = async (proj) => {
+  const pid = Number(proj?.id)
+  const key = proj?.key
+  if (!key || !Number.isFinite(pid) || pid <= 0) return
+  try {
+    const { data } = await api.get(`/api/projects/${pid}/platforms`)
+    platformConfigsByKey.value = { ...(platformConfigsByKey.value || {}), [key]: Array.isArray(data) ? data : [] }
+  } catch {
+    // ignore
+  }
+}
+
 const deletedBrandIds = ref(new Set())
 
+//pendingBrands用于处理项目和品牌的状态管理，包括添加、删除、编辑项目和品牌，以及保存更改到服务器。
 const pendingBrands = computed(() => (brands.value || []).filter((b) => b.is_pending))
-
+// 用于计算当前已保存项目中使用的品牌键，帮助判断某个品牌是否可以被删除（如果正在使用则不允许删除）。
 const usedBrandKeysInSavedProjects = computed(() => {
   const used = new Set()
   for (const p of projects.value || []) {
@@ -83,7 +166,11 @@ const canEnable = computed(() => {
   if (p.is_active) return true
   const hasCategory = Boolean(String(p.product_category || '').trim())
   const hasBrands = Array.isArray(p.brand_keys) && p.brand_keys.length > 0
-  if (!hasCategory || !hasBrands) return false
+  const cfgs = platformConfigsByKey.value?.[p.key]
+  const hasPlatforms =
+    (Array.isArray(cfgs) && cfgs.length > 0 && cfgs.some((x) => Boolean(x?.is_enabled))) ||
+    (Array.isArray(p.enabled_platform_ids) && p.enabled_platform_ids.length > 0)
+  if (!hasCategory || !hasBrands || !hasPlatforms) return false
   if (enabledCount.value >= 3) return false
   return true
 })
@@ -94,6 +181,9 @@ const loadAll = async () => {
   try {
     const [b, p] = await Promise.all([api.get('/api/dashboard/options'), api.get('/api/projects')])
     const dbBrands = b.data?.brands || []
+    const dbPlatforms = b.data?.platforms || []
+    const optionProjects = b.data?.projects || []
+    const optionById = new Map((optionProjects || []).map((x) => [Number(x?.id), x]))
     brands.value = dbBrands.map((x) => ({
       id: x.id,
       name: x.name,
@@ -101,23 +191,34 @@ const loadAll = async () => {
       key: `b-${x.id}`,
       is_pending: false,
     }))
+    platforms.value = dbPlatforms.map((x) => ({ id: x.id, code: x.code, name: x.name }))
 
     const dbProjects = p.data || []
-    projects.value = dbProjects.map((x) => ({
-      id: x.id,
-      name: x.name,
-      product_category: x.product_category || '',
-      is_active: Boolean(x.is_active),
-      brand_keys: (x.brand_ids || []).map((bid) => `b-${bid}`),
-      key: `p-${x.id}`,
-    }))
+    const nextPlatformConfigsByKey = {}
+    projects.value = dbProjects.map((x) => {
+      const key = `p-${x.id}`
+      const opt = optionById.get(Number(x?.id)) || {}
+      nextPlatformConfigsByKey[key] = Array.isArray(opt?.platform_configs) ? opt.platform_configs : (nextPlatformConfigsByKey[key] || [])
+      return {
+        id: x.id,
+        name: x.name,
+        product_category: x.product_category || '',
+        is_active: Boolean(x.is_active),
+        brand_keys: (x.brand_ids || []).map((bid) => `b-${bid}`),
+        enabled_platform_ids: Array.isArray(x.enabled_platform_ids) ? x.enabled_platform_ids : (opt.enabled_platform_ids || []),
+        key,
+      }
+    })
+    platformConfigsByKey.value = nextPlatformConfigsByKey
 
     isEditMode.value = false
     if (activeProjectKey.value == null && projects.value.length) {
       activeProjectKey.value = projects.value[0].key
       setDraftFromProject(projects.value[0])
+      await fetchProjectPlatforms(projects.value[0])
     } else {
       setDraftFromProject(activeProject.value)
+      await fetchProjectPlatforms(activeProject.value)
     }
   } catch (e) {
     error.value = e?.response?.data?.detail || e?.message || '加载失败'
@@ -126,9 +227,10 @@ const loadAll = async () => {
   }
 }
 
-const onSwitchProject = (pkey) => {
+const onSwitchProject = async (pkey) => {
   activeProjectKey.value = pkey
   setDraftFromProject(activeProject.value)
+  await fetchProjectPlatforms(activeProject.value)
   isEditMode.value = false
 }
 
@@ -139,6 +241,7 @@ const addProject = () => {
   projects.value = [...projects.value, p]
   activeProjectKey.value = p.key
   setDraftFromProject(p)
+  platformConfigsByKey.value = { ...(platformConfigsByKey.value || {}), [p.key]: [] }
   isEditMode.value = true
 }
 
@@ -191,7 +294,7 @@ const removeActive = async () => {
   if (p.is_active) return
 
   try {
-    await ElMessageBox.confirm('确认删除该项目？', '二次确认', {
+    await ElMessageBox.confirm('确认删除该项目？', '操作确认', {
       confirmButtonText: '删除',
       cancelButtonText: '取消',
       type: 'warning',
@@ -200,12 +303,36 @@ const removeActive = async () => {
     return
   }
 
-  // mark for deletion; only persisted on Save
-  if (p.id != null && Number(p.id) > 0) deletedProjectIds.value.add(Number(p.id))
-  projects.value = projects.value.filter((x) => x.key !== p.key)
-  activeProjectKey.value = projects.value[0]?.key || null
-  setDraftFromProject(activeProject.value)
-  isEditMode.value = false
+  // Persist delete immediately so refresh won't bring it back.
+  loading.value = true
+  error.value = ''
+  try {
+    const pid = Number(p.id)
+    if (Number.isFinite(pid) && pid > 0) {
+      await api.delete(`/api/projects/${pid}`)
+      ElMessage.success('已删除项目')
+      // sync dashboard/project selector state
+      if (projectsStore.activeProjectId === pid) projectsStore.setActiveProjectId(null)
+      await loadAll()
+      await projectsStore.fetch()
+      return
+    }
+
+    // Local-only project (not saved yet)
+    projects.value = projects.value.filter((x) => x.key !== p.key)
+    if (platformConfigsByKey.value?.[p.key] != null) {
+      const next = { ...(platformConfigsByKey.value || {}) }
+      delete next[p.key]
+      platformConfigsByKey.value = next
+    }
+    activeProjectKey.value = projects.value[0]?.key || null
+    setDraftFromProject(activeProject.value)
+    isEditMode.value = false
+  } catch (e) {
+    error.value = e?.response?.data?.detail || e?.message || '删除失败'
+  } finally {
+    loading.value = false
+  }
 }
 
 const startEdit = () => {
@@ -219,14 +346,14 @@ const onToggleActive = async (val) => {
   const p = activeProject.value
   if (!p || p.id == null || Number(p.id) <= 0) return
 
-  if (val === true && !canEnable.value) {
-    // revert
-    p.is_active = false
-    setDraftFromProject(p)
-    if (enabledCount.value >= 3) ElMessage.warning('最多同时启用3个项目')
-    else ElMessage.warning('产品品类和监控品牌为空，则不允许启用')
-    return
-  }
+    if (val === true && !canEnable.value) {
+      // revert
+      p.is_active = false
+      setDraftFromProject(p)
+      if (enabledCount.value >= 3) ElMessage.warning('最多同时启用3个项目')
+      else ElMessage.warning('产品品类/监控品牌/监控平台未配置完整，则不允许启用')
+      return
+    }
 
   loading.value = true
   error.value = ''
@@ -252,6 +379,12 @@ const saveAll = async () => {
   loading.value = true
   error.value = ''
   try {
+    // snapshot platform configs by project name (so new projects can be matched after save)
+    const platformConfigsByName = new Map()
+    for (const p of projects.value || []) {
+      platformConfigsByName.set(String(p.name || ''), Array.isArray(platformConfigsByKey.value?.[p.key]) ? platformConfigsByKey.value[p.key] : [])
+    }
+
     // 0) Persist deleted brands (only when not used by saved projects)
     for (const bid of Array.from(deletedBrandIds.value.values())) {
       await api.delete(`/api/brands/${bid}`)
@@ -286,26 +419,38 @@ const saveAll = async () => {
       }
     })
 
-    // 3) Persist deletions
-    for (const id of Array.from(deletedProjectIds.value.values())) {
-      const pid = Number(id)
-      if (!Number.isFinite(pid) || pid <= 0) continue
-      try {
-        await api.delete(`/api/projects/${pid}`)
-      } catch (e) {
-        // Treat "already deleted / not found" as success.
-        if (e?.response?.status !== 404) throw e
-      }
-    }
-
     // 4) Persist upserts
     await api.post('/api/projects', payload)
 
     // 5) Reload and reset local state
-    deletedProjectIds.value = new Set()
     deletedBrandIds.value = new Set()
     await loadAll()
     await projectsStore.fetch()
+
+    // 6) Persist platform configs (per project)
+    for (const p of projects.value || []) {
+      const pid = Number(p?.id)
+      if (!Number.isFinite(pid) || pid <= 0) continue
+      const cfgs = platformConfigsByName.get(String(p?.name || ''))
+      if (!cfgs || !Array.isArray(cfgs)) continue
+      const platformsPayload = cfgs
+        .map((r) => ({
+          platform_id: Number(r?.platform_id),
+          is_enabled: Boolean(r?.is_enabled),
+          crawl_mode: String(r?.crawl_mode || 'schedule'),
+          cron_expr: String(r?.cron_expr || '0 5 * * *'),
+          timezone: String(r?.timezone || 'Asia/Shanghai'),
+          max_posts_per_run: Number(r?.max_posts_per_run) || 20,
+          sentiment_model: String(r?.sentiment_model || 'rule-based'),
+          query_strategy: r?.query_strategy ?? null,
+        }))
+        .filter((r) => Number.isFinite(Number(r.platform_id)))
+
+      if (platformsPayload.length === 0) continue
+      await api.put(`/api/projects/${pid}/platforms`, { platforms: platformsPayload })
+      await fetchProjectPlatforms(p)
+    }
+
     // best-effort: keep active selection by name
     if (draft.value?.name) {
       const found = (projects.value || []).find((x) => x.name === draft.value.name)
@@ -428,6 +573,96 @@ loadAll()
           </el-select>
           <div class="muted" v-if="pendingBrands.length" style="margin-top: 6px;">待保存新品牌：{{ pendingBrands.length }}</div>
         </el-form-item>
+
+        <el-form-item label="监控平台（可多选）">
+          <el-select
+            v-model="draftPlatformIds"
+            multiple
+            filterable
+            collapse-tags
+            collapse-tags-tooltip
+            placeholder="选择平台"
+            style="width: 520px; max-width: 100%"
+            :disabled="!canEditActiveProject"
+          >
+            <el-option v-for="p in platformOptions" :key="p.id" :label="p.name" :value="p.id" />
+          </el-select>
+          <div class="muted" style="margin-top: 6px;">启用项目时至少需要 1 个已启用平台（否则无法启用）。</div>
+        </el-form-item>
+
+        <el-form-item label="平台刷新参数（逐平台配置）">
+          <el-table :data="activePlatformConfigs" size="small" stripe style="width: 100%">
+            <el-table-column label="平台" width="160">
+              <template #default="{ row }">
+                <span>{{ platformLabel(row.platform_id) }}</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="是否启用" width="110">
+              <template #default="{ row }">
+                <el-switch
+                  :model-value="Boolean(row.is_enabled)"
+                  :disabled="!canEditActiveProject"
+                  @change="(v) => updatePlatformConfig(row.platform_id, { is_enabled: Boolean(v) })"
+                />
+              </template>
+            </el-table-column>
+
+            <el-table-column label="模式" width="140">
+              <template #default="{ row }">
+                <el-select
+                  :model-value="String(row.crawl_mode || 'schedule')"
+                  style="width: 120px"
+                  :disabled="!canEditActiveProject"
+                  @change="(v) => updatePlatformConfig(row.platform_id, { crawl_mode: String(v) })"
+                >
+                  <el-option label="定时" value="schedule" />
+                  <el-option label="手动" value="manual" />
+                </el-select>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="Cron" min-width="160">
+              <template #default="{ row }">
+                <el-input
+                  :model-value="String(row.cron_expr || '0 5 * * *')"
+                  placeholder="0 5 * * *"
+                  :disabled="!canEditActiveProject"
+                  @change="(v) => updatePlatformConfig(row.platform_id, { cron_expr: String(v) })"
+                />
+              </template>
+            </el-table-column>
+
+            <el-table-column label="每次抓取" width="130">
+              <template #default="{ row }">
+                <el-input-number
+                  :model-value="Number(row.max_posts_per_run || 20)"
+                  :min="1"
+                  :max="500"
+                  controls-position="right"
+                  :disabled="!canEditActiveProject"
+                  @change="(v) => updatePlatformConfig(row.platform_id, { max_posts_per_run: Number(v) })"
+                />
+              </template>
+            </el-table-column>
+
+            <el-table-column label="情感模型" width="160">
+              <template #default="{ row }">
+                <el-select
+                  :model-value="String(row.sentiment_model || 'rule-based')"
+                  filterable
+                  allow-create
+                  default-first-option
+                  style="width: 140px"
+                  :disabled="!canEditActiveProject"
+                  @change="(v) => updatePlatformConfig(row.platform_id, { sentiment_model: String(v) })"
+                >
+                  <el-option label="rule-based" value="rule-based" />
+                </el-select>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-form-item>
       </el-form>
 
       <div class="bottom-actions">
@@ -473,7 +708,7 @@ loadAll()
 }
 
 .form {
-  max-width: 720px;
+  max-width: 980px;
 }
 
 @media (max-width: 640px) {

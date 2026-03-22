@@ -1,11 +1,22 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 import pandas as pd
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 from backend.storage.db import get_repo
 from .auth import get_current_user
+from pydantic import BaseModel
+from zoneinfo import ZoneInfo
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
+
+
+class ManualRefreshRequest(BaseModel):
+    project_id: Optional[int] = None
+    brand_ids: Optional[List[int]] = None
+    platform_ids: Optional[List[int]] = None
+    max_posts_per_run: int = 30
+    sentiment_model: str = "rule-based"
+    trigger_type: str = "manual"  # manual | schedule
 
 
 def _safe_ratio(numerator: int, denominator: int) -> float:
@@ -35,6 +46,64 @@ def get_kpis(user=Depends(get_current_user)):
         "negative": _safe_ratio(neg, total_sent),
         "intensity": intensity,
     }
+
+
+@router.post("/manual_refresh")
+def manual_refresh(payload: ManualRefreshRequest = Body(default=ManualRefreshRequest()), user=Depends(get_current_user)):
+    """
+    Dashboard "manual refresh": generate a small batch of simulated crawler data,
+    then the frontend can re-fetch dashboard KPIs/trends immediately.
+
+    Scope:
+    - If brand_ids provided: limit to projects linked to those brands.
+    - Otherwise: run for all active projects.
+    """
+    repo = get_repo()
+
+    try:
+        from backend.agents.simulator import run_simulated_crawl
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"simulator import failed: {e}") from e
+
+    run_date = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+    max_posts_per_run = int(max(1, min(int(payload.max_posts_per_run or 30), 500)))
+    sentiment_model = str(payload.sentiment_model or "rule-based")
+    trigger_type = str(payload.trigger_type or "manual")
+
+    # When project_id omitted: refresh all enabled projects (is_active=1)
+    project_ids: List[int] = []
+    if payload.project_id is not None:
+        project_ids = [int(payload.project_id)]
+    else:
+        proj_df = repo.query("monitor_project")
+        if proj_df is not None and not proj_df.empty and {"id", "is_active"}.issubset(proj_df.columns):
+            tmp = proj_df.copy()
+            tmp["id"] = pd.to_numeric(tmp["id"], errors="coerce")
+            tmp["is_active"] = pd.to_numeric(tmp["is_active"], errors="coerce").fillna(0).astype(int)
+            tmp = tmp.dropna(subset=["id"])
+            tmp["id"] = tmp["id"].astype(int)
+            project_ids = sorted(tmp[tmp["is_active"] == 1]["id"].tolist())
+
+    if not project_ids:
+        raise HTTPException(status_code=422, detail="project_id is required (or enable at least one project)")
+
+    summaries: List[Dict[str, Any]] = []
+    for pid in project_ids:
+        summaries.append(
+            run_simulated_crawl(
+                project_id=int(pid),
+                run_date=run_date,
+                seed=None,
+                brand_ids=[int(x) for x in (payload.brand_ids or []) if x is not None] or None,
+                platform_ids=[int(x) for x in (payload.platform_ids or []) if x is not None] or None,
+                max_posts_per_run=max_posts_per_run,
+                sentiment_model=sentiment_model,
+                trigger_type=trigger_type,
+                crawl_source=("manual" if trigger_type == "manual" else "schedule"),
+            )
+        )
+
+    return {"items": summaries, "total_runs": sum(int(x.get("pipeline_runs") or 0) for x in summaries)}
 
 
 def _safe_int(value: Any) -> Optional[int]:
@@ -216,6 +285,7 @@ def get_options(user=Depends(get_current_user)):
     projects_df = repo.query("monitor_project")
     platforms_df = repo.query("platform")
     project_brand_df = repo.query("monitor_project_brand")
+    project_platform_df = repo.query("monitor_project_platform")
 
     brands: List[Dict[str, Any]] = []
     if not brand_df.empty:
@@ -238,6 +308,40 @@ def get_options(user=Depends(get_current_user)):
             for pid, g in tmp.groupby("project_id"):
                 proj_brand_map[int(pid)] = sorted({int(x) for x in g["brand_id"].tolist() if x is not None})
 
+        proj_platform_cfg: Dict[int, List[Dict[str, Any]]] = {}
+        enabled_platform_ids: Dict[int, List[int]] = {}
+        if project_platform_df is not None and not project_platform_df.empty and {"project_id", "platform_id", "is_enabled"}.issubset(project_platform_df.columns):
+            t = project_platform_df.copy()
+            for c in ["id", "project_id", "platform_id", "is_enabled", "max_posts_per_run"]:
+                if c in t.columns:
+                    t[c] = pd.to_numeric(t[c], errors="coerce")
+            t = t.dropna(subset=["project_id", "platform_id"])
+            t["project_id"] = t["project_id"].astype(int)
+            t["platform_id"] = t["platform_id"].astype(int)
+            t["is_enabled"] = t["is_enabled"].fillna(0).astype(int)
+            for pid, g in t.groupby("project_id"):
+                cfgs: List[Dict[str, Any]] = []
+                enabled: List[int] = []
+                for _, r in g.sort_values(by=["platform_id"]).iterrows():
+                    plat_id = int(r.get("platform_id"))
+                    is_enabled = int(r.get("is_enabled") or 0) == 1
+                    if is_enabled:
+                        enabled.append(plat_id)
+                    cfgs.append(
+                        {
+                            "id": _safe_int(r.get("id")),
+                            "platform_id": plat_id,
+                            "is_enabled": is_enabled,
+                            "crawl_mode": str(r.get("crawl_mode") or "schedule"),
+                            "cron_expr": str(r.get("cron_expr") or "0 5 * * *"),
+                            "timezone": str(r.get("timezone") or "Asia/Shanghai"),
+                            "max_posts_per_run": int(pd.to_numeric(r.get("max_posts_per_run"), errors="coerce") or 0) or 20,
+                            "sentiment_model": str(r.get("sentiment_model") or "rule-based"),
+                        }
+                    )
+                proj_platform_cfg[int(pid)] = cfgs
+                enabled_platform_ids[int(pid)] = sorted({int(x) for x in enabled})
+
         for _, row in projects_df.iterrows():
             pid = _safe_int(row.get("id"))
             if pid is None:
@@ -255,6 +359,8 @@ def get_options(user=Depends(get_current_user)):
                     "product_category": (None if pd.isna(row.get("product_category")) else row.get("product_category")),
                     "description": desc,
                     "is_active": int(pd.to_numeric(row.get("is_active"), errors="coerce") or 0),
+                    "enabled_platform_ids": enabled_platform_ids.get(int(pid), []),
+                    "platform_configs": proj_platform_cfg.get(int(pid), []),
                 }
             )
 
@@ -279,6 +385,7 @@ def get_options(user=Depends(get_current_user)):
 def get_overview(
     brand_ids: Optional[List[int]] = Query(None, description="1-4 brand ids"),
     project_ids: Optional[List[int]] = Query(None, description="(Deprecated) 1-4 project ids"),
+    project_id: Optional[int] = Query(None, description="Active project id (optional)."),
     days: int = Query(7, ge=1, le=365),
     start_date: Optional[str] = Query(None, description="Custom date range start (YYYY-MM-DD)."),
     end_date: Optional[str] = Query(None, description="Custom date range end (YYYY-MM-DD)."),
@@ -308,6 +415,8 @@ def get_overview(
     repo = get_repo()
     start, end = _parse_range(days, start_date, end_date)
     project_ids, project_brand = _projects_for_brands(repo, brand_ids)
+    if project_id is not None:
+        project_ids = [int(project_id)] if int(project_id) in set(project_ids) else []
     if not project_ids:
         return {"range": {"from": start.date().isoformat(), "to": end.date().isoformat()}, "items": []}
 
@@ -327,23 +436,43 @@ def get_overview(
     brand_map = _brand_name_map(repo)
     sent_df = repo.query("sentiment_result")
     brand_intensity_map: Dict[int, float] = {}
-    if not sent_df.empty and {"project_id", "intensity"}.issubset(sent_df.columns):
-        sent_df["intensity"] = pd.to_numeric(sent_df["intensity"], errors="coerce")
-        sent_df = sent_df.dropna(subset=["intensity"])
-        if not sent_df.empty:
-            sent_df = sent_df[sent_df["project_id"].apply(lambda x: _safe_int(x) in project_ids)]
-            sent_df["brand_id"] = sent_df["project_id"].apply(lambda x: project_brand.get(_safe_int(x) or -1))
-            for bid, g in sent_df.dropna(subset=["brand_id"]).groupby("brand_id"):
-                try:
+    if not sent_df.empty and "intensity" in sent_df.columns:
+        tmp = sent_df.copy()
+        tmp["intensity"] = pd.to_numeric(tmp["intensity"], errors="coerce")
+        tmp = tmp.dropna(subset=["intensity"])
+        if not tmp.empty and "project_id" in tmp.columns:
+            tmp["project_id"] = pd.to_numeric(tmp["project_id"], errors="coerce")
+            tmp = tmp.dropna(subset=["project_id"])
+            tmp["project_id"] = tmp["project_id"].astype(int)
+            tmp = tmp[tmp["project_id"].isin(project_ids)]
+
+        if not tmp.empty and "brand_id" in tmp.columns:
+            tmp["brand_id"] = pd.to_numeric(tmp["brand_id"], errors="coerce")
+            if tmp["brand_id"].notna().any():
+                tmp = tmp.dropna(subset=["brand_id"])
+                tmp["brand_id"] = tmp["brand_id"].astype(int)
+                for bid, g in tmp.groupby("brand_id"):
                     brand_intensity_map[int(bid)] = round(float(g["intensity"].mean()), 4)
-                except Exception:
-                    pass
+            else:
+                # legacy: project -> first brand
+                tmp["brand_id"] = tmp["project_id"].apply(lambda x: project_brand.get(int(x), None))
+                for bid, g in tmp.dropna(subset=["brand_id"]).groupby("brand_id"):
+                    brand_intensity_map[int(bid)] = round(float(g["intensity"].mean()), 4)
+        elif not tmp.empty:
+            tmp["brand_id"] = tmp["project_id"].apply(lambda x: project_brand.get(int(x), None))
+            for bid, g in tmp.dropna(subset=["brand_id"]).groupby("brand_id"):
+                brand_intensity_map[int(bid)] = round(float(g["intensity"].mean()), 4)
 
     # Aggregate per brand
-    daily_df["brand_id"] = daily_df["project_id"].apply(lambda x: project_brand.get(int(x), None))
+    if "brand_id" in daily_df.columns and daily_df["brand_id"].notna().any():
+        daily_df["brand_id_norm"] = pd.to_numeric(daily_df["brand_id"], errors="coerce")
+    else:
+        daily_df["brand_id_norm"] = daily_df["project_id"].apply(lambda x: project_brand.get(int(x), None))
     items: List[Dict[str, Any]] = []
-    for bid, g in daily_df.dropna(subset=["brand_id"]).groupby("brand_id"):
-        bid_int = int(bid)
+    for bid, g in daily_df.dropna(subset=["brand_id_norm"]).groupby("brand_id_norm"):
+        bid_int = int(pd.to_numeric(bid, errors="coerce") or 0)
+        if bid_int <= 0:
+            continue
         if bid_int not in brand_ids:
             continue
         total = int(g.get("total_posts", 0).sum())
@@ -412,6 +541,7 @@ def get_trends(user=Depends(get_current_user)):
 def get_sentiment_trends(
     brand_ids: Optional[List[int]] = Query(None),
     project_ids: Optional[List[int]] = Query(None, description="(Deprecated) 1-4 project ids"),
+    project_id: Optional[int] = Query(None, description="Active project id (optional)."),
     days: int = Query(14, ge=1, le=365),
     start_date: Optional[str] = Query(None, description="Custom date range start (YYYY-MM-DD)."),
     end_date: Optional[str] = Query(None, description="Custom date range end (YYYY-MM-DD)."),
@@ -443,6 +573,8 @@ def get_sentiment_trends(
     repo = get_repo()
     start, end = _parse_range(days, start_date, end_date)
     project_ids, project_brand = _projects_for_brands(repo, brand_ids)
+    if project_id is not None:
+        project_ids = [int(project_id)] if int(project_id) in set(project_ids) else []
     if not project_ids:
         return {"dates": [], "series": []}
     daily_df = repo.query("daily_metric")
@@ -483,9 +615,14 @@ def get_sentiment_trends(
 
     series = []
     metric_cols = ["total_posts", "valid_posts", "spam_posts", "pos_posts", "neu_posts", "neg_posts"]
-    daily_df["brand_id"] = daily_df["project_id"].apply(lambda x: project_brand.get(int(x), None))
-    for bid, g in daily_df.dropna(subset=["brand_id"]).groupby("brand_id"):
-        bid_int = int(bid)
+    if "brand_id" in daily_df.columns and daily_df["brand_id"].notna().any():
+        daily_df["brand_id_norm"] = pd.to_numeric(daily_df["brand_id"], errors="coerce")
+    else:
+        daily_df["brand_id_norm"] = daily_df["project_id"].apply(lambda x: project_brand.get(int(x), None))
+    for bid, g in daily_df.dropna(subset=["brand_id_norm"]).groupby("brand_id_norm"):
+        bid_int = int(pd.to_numeric(bid, errors="coerce") or 0)
+        if bid_int <= 0:
+            continue
         if bid_int not in brand_ids:
             continue
         data = [0.0] * len(dates)
@@ -553,12 +690,17 @@ def get_competitor_ranking(
     brand_map = _brand_name_map(repo)
     project_brand = _project_brand_map(repo)
     rows: List[Dict[str, Any]] = []
-    daily_df["brand_id"] = daily_df["project_id"].apply(lambda x: project_brand.get(int(x), None))
+    if "brand_id" in daily_df.columns and daily_df["brand_id"].notna().any():
+        daily_df["brand_id_norm"] = pd.to_numeric(daily_df["brand_id"], errors="coerce")
+    else:
+        daily_df["brand_id_norm"] = daily_df["project_id"].apply(lambda x: project_brand.get(int(x), None))
     if brand_ids:
         allowed = set(int(x) for x in brand_ids[:4])
-        daily_df = daily_df[daily_df["brand_id"].isin(list(allowed))]
-    for bid, g in daily_df.dropna(subset=["brand_id"]).groupby("brand_id"):
-        bid_int = int(bid)
+        daily_df = daily_df[daily_df["brand_id_norm"].isin(list(allowed))]
+    for bid, g in daily_df.dropna(subset=["brand_id_norm"]).groupby("brand_id_norm"):
+        bid_int = int(pd.to_numeric(bid, errors="coerce") or 0)
+        if bid_int <= 0:
+            continue
         total = float(pd.to_numeric(g.get("total_posts"), errors="coerce").fillna(0).sum())
         spam = float(pd.to_numeric(g.get("spam_posts"), errors="coerce").fillna(0).sum())
         neg = float(pd.to_numeric(g.get("neg_posts"), errors="coerce").fillna(0).sum())
@@ -619,6 +761,7 @@ def get_alerts(user=Depends(get_current_user)):
 @router.get("/sentiment_alerts")
 def get_sentiment_alerts(
     brand_ids: Optional[List[int]] = Query(None),
+    project_id: Optional[int] = Query(None, description="Active project id (optional)."),
     days: int = Query(14, ge=2, le=365),
     start_date: Optional[str] = Query(None, description="Custom date range start (YYYY-MM-DD)."),
     end_date: Optional[str] = Query(None, description="Custom date range end (YYYY-MM-DD)."),
@@ -638,6 +781,8 @@ def get_sentiment_alerts(
     daily_df = daily_df.dropna(subset=["metric_date"])
     daily_df = daily_df[(daily_df["metric_date"] >= start) & (daily_df["metric_date"] <= end)]
     daily_df = _coerce_daily_metric_numeric(daily_df)
+    if project_id is not None and "project_id" in daily_df.columns:
+        daily_df = daily_df[daily_df["project_id"].astype(int) == int(project_id)]
     if daily_df.empty:
         return []
 
@@ -651,13 +796,18 @@ def get_sentiment_alerts(
     project_brand = _project_brand_map(repo)
     alerts: List[Dict[str, Any]] = []
 
-    daily_df["brand_id"] = daily_df["project_id"].apply(lambda x: project_brand.get(int(x), None))
+    if "brand_id" in daily_df.columns and daily_df["brand_id"].notna().any():
+        daily_df["brand_id_norm"] = pd.to_numeric(daily_df["brand_id"], errors="coerce")
+    else:
+        daily_df["brand_id_norm"] = daily_df["project_id"].apply(lambda x: project_brand.get(int(x), None))
     if brand_ids:
         allowed = set(int(x) for x in brand_ids[:4])
-        daily_df = daily_df[daily_df["brand_id"].isin(list(allowed))]
+        daily_df = daily_df[daily_df["brand_id_norm"].isin(list(allowed))]
 
-    for bid, g in daily_df.dropna(subset=["brand_id"]).groupby("brand_id"):
-        bid_int = int(bid)
+    for bid, g in daily_df.dropna(subset=["brand_id_norm"]).groupby("brand_id_norm"):
+        bid_int = int(pd.to_numeric(bid, errors="coerce") or 0)
+        if bid_int <= 0:
+            continue
         metric_cols = ["total_posts", "valid_posts", "spam_posts", "pos_posts", "neu_posts", "neg_posts"]
         cols = [c for c in metric_cols if c in g.columns]
         agg = g.groupby("date_str")[cols].sum()
@@ -713,6 +863,8 @@ def get_sentiment_alerts(
 @router.get("/keyword_frequencies")
 def get_keyword_frequencies(
     brand_ids: Optional[List[int]] = Query(None, description="Filter by brand ids (repeatable)."),
+    project_id: Optional[int] = Query(None, description="Active project id (optional)."),
+    platform_id: Optional[int] = Query(None, description="Optional platform filter (reserved)."),
     days: int = Query(14, ge=1, le=365),
     start_date: Optional[str] = Query(None, description="Custom date range start (YYYY-MM-DD)."),
     end_date: Optional[str] = Query(None, description="Custom date range end (YYYY-MM-DD)."),
@@ -737,6 +889,14 @@ def get_keyword_frequencies(
         df["publish_time"] = pd.to_datetime(df["publish_time"], errors="coerce")
         df = df.dropna(subset=["publish_time"])
         df = df[(df["publish_time"] >= start) & (df["publish_time"] <= end)]
+    if project_id is not None and "project_id" in df.columns:
+        df["project_id"] = pd.to_numeric(df["project_id"], errors="coerce")
+        df = df.dropna(subset=["project_id"])
+        df = df[df["project_id"].astype(int) == int(project_id)]
+    if platform_id is not None and "platform_id" in df.columns:
+        df["platform_id"] = pd.to_numeric(df["platform_id"], errors="coerce")
+        df = df.dropna(subset=["platform_id"])
+        df = df[df["platform_id"].astype(int) == int(platform_id)]
     if df.empty:
         return {"top_keywords": [], "brands": [], "range": {"from": start.date().isoformat(), "to": end.date().isoformat()}}
 
@@ -755,11 +915,12 @@ def get_keyword_frequencies(
     else:
         df["brand_id"] = None
 
-    if df["brand_id"].isna().all() and "project_id" in df.columns:
+    if "project_id" in df.columns:
         project_brand = _project_brand_map(repo)
         df["project_id"] = pd.to_numeric(df["project_id"], errors="coerce")
-        mask = pd.notna(df["project_id"])
-        df.loc[mask, "brand_id"] = df.loc[mask, "project_id"].astype(int).map(project_brand)
+        m = df["brand_id"].isna() & pd.notna(df["project_id"])
+        if m.any():
+            df.loc[m, "brand_id"] = df.loc[m, "project_id"].astype(int).map(project_brand)
 
     df["brand_id"] = pd.to_numeric(df["brand_id"], errors="coerce")
     df = df.dropna(subset=["brand_id"])

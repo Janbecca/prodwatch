@@ -127,10 +127,10 @@ def _enrich_posts(repo, df: pd.DataFrame) -> pd.DataFrame:
     if "platform_id" in df.columns:
         df["platform_name"] = df["platform_id"].map(lambda x: plat_map.get(int(x), {}).get("name") if pd.notna(x) else None)
 
-    # brand map (prefer stored brand_id; fallback to project -> first brand)
+    # brand map (prefer stored post_raw.brand_id; fallback per-row: project -> first brand)
     if "brand_id" not in df.columns:
         df["brand_id"] = None
-    if df["brand_id"].isna().all() and "project_id" in df.columns:
+    if "project_id" in df.columns:
         join_df = repo.query("monitor_project_brand")
         project_brand: Dict[int, Optional[int]] = {}
         if join_df is not None and not join_df.empty and {"project_id", "brand_id"}.issubset(join_df.columns):
@@ -143,7 +143,14 @@ def _enrich_posts(repo, df: pd.DataFrame) -> pd.DataFrame:
             for pid, g in j.groupby("project_id"):
                 bids = sorted({int(x) for x in g["brand_id"].tolist() if x is not None})
                 project_brand[int(pid)] = bids[0] if bids else None
-        df["brand_id"] = df["project_id"].dropna().astype(int).map(project_brand)
+
+        # only fill missing brand_id values (compat for old rows)
+        try:
+            missing = df["brand_id"].isna() & df["project_id"].notna()
+            if missing.any():
+                df.loc[missing, "brand_id"] = df.loc[missing, "project_id"].astype(int).map(project_brand)
+        except Exception:
+            pass
 
     brand_df = repo.query("brand")
     brand_map: Dict[int, str] = {}

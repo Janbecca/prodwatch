@@ -103,7 +103,9 @@ def analyze_sentiment(clean_df: pd.DataFrame, *, model: str = "rule-based") -> i
         except Exception:
             use_llm = False
 
-    inserted = 0
+    rows = []
+    base_id = _now_ts_ms() * 1000
+    seq = 0
     for _, r in clean_df.iterrows():
         clean_id = _safe_int(r.get("id"))
         if clean_id is None or clean_id in existing_clean_ids:
@@ -146,18 +148,29 @@ def analyze_sentiment(clean_df: pd.DataFrame, *, model: str = "rule-based") -> i
         elif emotions is None or not isinstance(emotions, dict):
             data["emotions"] = {}
 
-        repo.insert(
-            "sentiment_result",
+        rows.append(
             {
-                "id": _now_ts_ms(),
+                "id": base_id + seq,
                 "post_clean_id": clean_id,
                 "project_id": project_id,
+                "pipeline_run_id": _safe_int(r.get("pipeline_run_id")),
+                "project_platform_id": _safe_int(r.get("project_platform_id")),
+                "platform_id": _safe_int(r.get("platform_id")),
+                "brand_id": _safe_int(r.get("brand_id")),
                 "polarity": data.get("polarity"),
                 "confidence": data.get("confidence"),
                 "intensity": data.get("intensity"),
                 "emotions": json.dumps(data.get("emotions") or {}, ensure_ascii=False),
-            },
+            }
         )
-        inserted += 1
+        seq += 1
 
-    return inserted
+    if not rows:
+        return 0
+
+    if hasattr(repo, "insert_many"):
+        return int(repo.insert_many("sentiment_result", rows))
+
+    for row in rows:
+        repo.insert("sentiment_result", row)
+    return len(rows)

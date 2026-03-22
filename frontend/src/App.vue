@@ -55,7 +55,7 @@ const logout = () => {
           </div>
         </el-header>
         <el-main class="main">
-          <router-view />
+          <router-view :key="route.fullPath" />
         </el-main>
       </el-container>
     </el-container>
@@ -66,7 +66,7 @@ const logout = () => {
       <router-link to="/register">注册</router-link>
     </div>
     <main class="auth-main">
-      <router-view />
+      <router-view :key="route.fullPath" />
     </main>
   </div>
 </template>

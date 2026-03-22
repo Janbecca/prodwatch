@@ -14,6 +14,11 @@ const error = ref('')
 
 const options = ref({ brands: [], projects: [], platforms: [] })
 const selectedBrandIds = ref([])
+const selectedPlatformIds = ref([])
+
+// manual refresh params
+const refreshMaxPostsPerRun = ref(30)
+const refreshSentimentModel = ref('rule-based')
 
 const enabledProjects = computed(() => projectsStore.enabledProjects || [])
 const activeProjectId = computed({
@@ -30,7 +35,17 @@ const visibleBrands = computed(() => {
   return all.filter((b) => allow.has(Number(b.id)))
 })
 
-// time filter (cascader-like)
+const visiblePlatforms = computed(() => {
+  const all = options.value?.platforms || []
+  const p = activeProject.value
+  if (!p) return all
+  const allowIds = (p.enabled_platform_ids || []).map((x) => Number(x)).filter((x) => Number.isFinite(x))
+  if (!allowIds.length) return all
+  const allow = new Set(allowIds)
+  return all.filter((pl) => allow.has(Number(pl.id)))
+})
+
+// 时间范围选择相关的状态
 const timePopoverVisible = ref(false)
 const timeKey = ref('last14') // last7 | last14 | last30 | custom
 const customStart = ref(null) // Date | null
@@ -51,6 +66,7 @@ let timer = null
 
 const canCompare = computed(() => selectedBrandIds.value.length >= 2)
 
+// 格式化 API 错误信息，优先显示后端返回的 detail 字段
 const formatApiError = (e) => {
   const detail = e?.response?.data?.detail
   if (typeof detail === 'string') return detail
@@ -58,6 +74,7 @@ const formatApiError = (e) => {
   return e?.message || '请求失败'
 }
 
+// 将一个对象转换为 URLSearchParams，适用于 GET 请求的查询参数
 const buildParams = (obj) => {
   const params = new URLSearchParams()
   for (const [k, v] of Object.entries(obj || {})) {
@@ -71,6 +88,7 @@ const buildParams = (obj) => {
   return params
 }
 
+// 将一个日期字符串转换为 YYYY-MM-DD 格式，如果输入无效则返回 undefined
 const toDateOnly = (d) => {
   if (!d) return undefined
   const dt = new Date(d)
@@ -81,30 +99,75 @@ const toDateOnly = (d) => {
   return `${y}-${m}-${day}`
 }
 
+// 确保 selectedBrandIds 不超过 4 个，并且至少有一个（如果 options 中有品牌的话）
+// 注意：这里不能在每次 fetchAll 时无条件写 selectedBrandIds，否则会触发 watch 递归更新。
 const clampSelectedBrands = () => {
-  if (selectedBrandIds.value.length > 4) {
-    selectedBrandIds.value = selectedBrandIds.value.slice(0, 4)
+  const allowList = visibleBrands.value || []
+  const allow = new Set(allowList.map((b) => Number(b.id)).filter((x) => Number.isFinite(x)))
+
+  const cur = Array.isArray(selectedBrandIds.value) ? selectedBrandIds.value : []
+  let next = [...cur]
+
+  if (allow.size) next = next.filter((x) => allow.has(Number(x)))
+  if (next.length > 4) next = next.slice(0, 4)
+  if (next.length === 0) {
+    if (allowList.length) next = [allowList[0].id]
+    else if ((options.value.brands || []).length) next = [options.value.brands[0].id]
   }
-  if (selectedBrandIds.value.length === 0 && (options.value.brands || []).length) {
-    selectedBrandIds.value = [options.value.brands[0].id]
+
+  const same = next.length === cur.length && next.every((v, i) => Number(v) === Number(cur[i]))
+  if (!same) {
+    suppressAutoFetchAll = true
+    try {
+      selectedBrandIds.value = next
+    } finally {
+      suppressAutoFetchAll = false
+    }
+  }
+}
+
+const clampSelectedPlatforms = () => {
+  const allowList = visiblePlatforms.value || []
+  const allow = new Set(allowList.map((p) => Number(p.id)).filter((x) => Number.isFinite(x)))
+
+  const cur = Array.isArray(selectedPlatformIds.value) ? selectedPlatformIds.value : []
+  let next = [...cur].map((x) => Number(x)).filter((x) => Number.isFinite(x))
+
+  if (allow.size) next = next.filter((x) => allow.has(Number(x)))
+  if (next.length === 0 && allowList.length) next = allowList.map((x) => Number(x.id)).filter((x) => Number.isFinite(x))
+
+  next = Array.from(new Set(next))
+
+  const same = next.length === cur.length && next.every((v, i) => Number(v) === Number(cur[i]))
+  if (!same) {
+    suppressAutoFetchAll = true
+    try {
+      selectedPlatformIds.value = next
+    } finally {
+      suppressAutoFetchAll = false
+    }
   }
 }
 
 let suppressAutoFetchAll = false
 
+// 将当前激活项目的品牌 ID 应用到 selectedBrandIds 中，并触发数据刷新
 const applyProjectToBrands = async () => {
   const p = activeProject.value
   if (!p) return
   const ids = (p.brand_ids || []).map((x) => Number(x)).filter((x) => Number.isFinite(x))
+  const plats = (p.enabled_platform_ids || []).map((x) => Number(x)).filter((x) => Number.isFinite(x))
   suppressAutoFetchAll = true
   try {
     selectedBrandIds.value = ids.slice(0, 4)
+    selectedPlatformIds.value = plats
     await fetchAll()
   } finally {
     suppressAutoFetchAll = false
   }
 }
 
+// 根据 timeKey 和 customStart/customEnd 计算出用于 API 请求的时间参数
 const timeQuery = computed(() => {
   if (timeKey.value === 'custom') {
     const start = toDateOnly(customStart.value)
@@ -115,19 +178,20 @@ const timeQuery = computed(() => {
   return { days }
 })
 
+// 判断自定义日期范围是否准备就绪（即 start 和 end 都是有效日期）
 const isCustomRangeReady = computed(() => {
   if (timeKey.value !== 'custom') return true
   const start = toDateOnly(customStart.value)
   const end = toDateOnly(customEnd.value)
   return Boolean(start && end)
 })
-
+// 根据 timeKey 计算出显示在输入框中的文本
 const timeText = computed(() => {
   if (timeKey.value === 'custom') return '自定义'
   const days = Number(timeKey.value.replace('last', ''))
   return `近 ${days} 天`
 })
-
+// 根据 overview 中的 range 或者 timeKey 和 customStart/customEnd 计算出当前选中的时间范围标签
 const selectedRangeLabel = computed(() => {
   const r = overview.value?.range
   if (r?.from && r?.to) return `${r.from} ~ ${r.to}`
@@ -145,20 +209,23 @@ const selectedRangeLabel = computed(() => {
   return `${toDateOnly(start)} ~ ${toDateOnly(end)}`
 })
 
+// 从后端获取可选的品牌、项目和平台列表，并更新 options 状态
 const fetchOptions = async () => {
   const { data } = await api.get('/api/dashboard/options')
   options.value = data
   clampSelectedBrands()
+  clampSelectedPlatforms()
 }
-
+// 从后端获取仪表盘的所有数据（概览、趋势、告警、关键词频率），并更新对应的状态
 const fetchAll = async () => {
   loading.value = true
   error.value = ''
   try {
     clampSelectedBrands()
+    clampSelectedPlatforms()
     if (!isCustomRangeReady.value) return
-
-    const baseParams = { brand_ids: selectedBrandIds.value, ...timeQuery.value }
+    // 构建基础的查询参数，包括选中的品牌 ID / 当前项目 / 时间范围
+    const baseParams = { brand_ids: selectedBrandIds.value, project_id: activeProjectId.value || undefined, ...timeQuery.value }
     const [o, t, a, k] = await Promise.all([
       api.get('/api/dashboard/overview', { params: buildParams(baseParams) }),
       api.get('/api/dashboard/sentiment_trends', {
@@ -177,19 +244,33 @@ const fetchAll = async () => {
     loading.value = false
   }
 }
+// 触发后端进行一次手动数据刷新，刷新完成后重新获取所有数据
+const manualRefresh = async () => {
+  loading.value = true
+  error.value = ''
+  try {
+    clampSelectedBrands()
+    clampSelectedPlatforms()
+    if (!isCustomRangeReady.value) return
 
-const startPolling = () => {
-  stopPolling()
-  timer = setInterval(() => {
-    fetchAll()
-  }, 15000)
+    await api.post('/api/dashboard/manual_refresh', {
+      brand_ids: selectedBrandIds.value,
+      project_id: activeProjectId.value || undefined,
+      platform_ids: selectedPlatformIds.value.length ? selectedPlatformIds.value : undefined,
+      max_posts_per_run: Number(refreshMaxPostsPerRun.value) || 30,
+      sentiment_model: String(refreshSentimentModel.value || 'rule-based'),
+      trigger_type: 'manual',
+    })
+
+    await fetchAll()
+  } catch (e) {
+    error.value = formatApiError(e) || '手动刷新失败'
+  } finally {
+    loading.value = false
+  }
 }
 
-const stopPolling = () => {
-  if (timer) clearInterval(timer)
-  timer = null
-}
-
+// 构建情绪趋势图的配置项，根据 trends 数据和当前选中的 trendMetric 计算出适合 ECharts 的配置对象
 const buildChartOption = () => {
   const dates = trends.value?.dates || []
   const series = (trends.value?.series || []).map((s) => ({
@@ -213,7 +294,7 @@ const buildChartOption = () => {
     title: { text: `情绪趋势 - ${metricLabel}`, left: 8, top: 6, textStyle: { fontSize: 14 } },
   }
 }
-
+// 构建关键词监控图的配置项，根据 keywordFreq 数据计算出适合 ECharts 的配置对象，展示各品牌在 top 关键词上的分布情况
 const buildKeywordChartOption = () => {
   const top = keywordFreq.value?.top_keywords || []
   const categories = top.map((x) => x.keyword).filter((x) => x != null && String(x).trim() !== '')
@@ -239,7 +320,7 @@ const buildKeywordChartOption = () => {
     title: { text: '关键词监控（Top 12）', left: 8, top: 6, textStyle: { fontSize: 14 } },
   }
 }
-
+// 渲染情绪趋势图，如果 chartEl 已经存在但 chart 实例不存在，则初始化一个新的 ECharts 实例；如果没有数据则显示暂无数据的提示
 const renderKeywordChart = () => {
   if (!keywordChartEl.value) return
   if (!keywordChart) keywordChart = echarts.init(keywordChartEl.value)
@@ -292,7 +373,6 @@ onMounted(async () => {
   else await fetchAll()
   renderChart()
   renderKeywordChart()
-  startPolling()
   window.addEventListener('resize', resizeChart)
 })
 
@@ -375,7 +455,7 @@ const onOverviewRowClick = (row) => {
 
     <div class="topbar">
     
-      <div class="muted">每 15 秒自动刷新</div>
+      <div class="muted">每天自动刷新</div>
     </div>
 
     <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" />
@@ -413,6 +493,22 @@ const onOverviewRowClick = (row) => {
               :disabled="enabledProjects.length === 0"
             >
               <el-option v-for="b in visibleBrands" :key="b.id" :label="b.name" :value="b.id" />
+            </el-select>
+          </div>
+
+          <div class="field">
+            <div class="label">平台（项目已启用平台）</div>
+            <el-select
+              v-model="selectedPlatformIds"
+              multiple
+              filterable
+              collapse-tags
+              collapse-tags-tooltip
+              placeholder="选择平台"
+              style="width: 320px; max-width: 100%"
+              :disabled="enabledProjects.length === 0"
+            >
+              <el-option v-for="p in visiblePlatforms" :key="p.id" :label="p.name" :value="p.id" />
             </el-select>
           </div>
 
@@ -469,7 +565,19 @@ const onOverviewRowClick = (row) => {
         </div>
 
         <div class="right">
-          <el-button type="primary" :loading="loading" @click="fetchAll">
+          <div class="refresh-params">
+            <div class="param">
+              <div class="label">每次抓取</div>
+              <el-input-number v-model="refreshMaxPostsPerRun" :min="1" :max="500" :step="5" controls-position="right" />
+            </div>
+            <div class="param">
+              <div class="label">情感模型</div>
+              <el-select v-model="refreshSentimentModel" filterable allow-create default-first-option style="width: 160px">
+                <el-option label="rule-based" value="rule-based" />
+              </el-select>
+            </div>
+          </div>
+          <el-button type="primary" :loading="loading" @click="manualRefresh">
             {{ loading ? '刷新中…' : '手动刷新' }}
           </el-button>
         </div>
@@ -628,6 +736,27 @@ const onOverviewRowClick = (row) => {
 .label {
   font-size: 12px;
   color: #4b5563;
+}
+
+.right {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.refresh-params {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.refresh-params .param {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .grid {

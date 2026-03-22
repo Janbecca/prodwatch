@@ -15,6 +15,8 @@ const reports = ref([])
 
 // filters
 const filterProjectId = ref('')
+const filterBrandId = ref('')
+const filterPlatformId = ref('')
 const filterReportType = ref('')
 const filterTimeRange = ref([]) // 数据时间范围 [Date, Date]
 const filterCreatedRange = ref([]) // 创建时间范围 [Date, Date]
@@ -130,6 +132,58 @@ const filteredBrandOptions = computed(() => {
   return (brandOptions.value || []).filter((b) => brandIds.has(Number(b.id)))
 })
 
+const filterProjectBrandIds = computed(() => {
+  const pid = Number(filterProjectId.value)
+  if (!Number.isFinite(pid) || pid <= 0) return []
+  const p = (projects.value || []).find((x) => Number(x?.id) === pid)
+  const ids = Array.isArray(p?.brand_ids) ? p.brand_ids : []
+  return ids.map((x) => Number(x)).filter((x) => Number.isFinite(x))
+})
+
+const filteredFilterBrandOptions = computed(() => {
+  const pid = Number(filterProjectId.value)
+  if (!Number.isFinite(pid) || pid <= 0) return brandOptions.value || []
+  const allow = new Set(filterProjectBrandIds.value || [])
+  if (!allow.size) return []
+  return (brandOptions.value || []).filter((b) => allow.has(Number(b.id)))
+})
+
+const filterProjectEnabledPlatformIds = computed(() => {
+  const pid = Number(filterProjectId.value)
+  if (!Number.isFinite(pid) || pid <= 0) return []
+  const p = (projects.value || []).find((x) => Number(x?.id) === pid)
+  const ids = Array.isArray(p?.enabled_platform_ids) ? p.enabled_platform_ids : []
+  return ids.map((x) => Number(x)).filter((x) => Number.isFinite(x))
+})
+
+const filteredFilterPlatformOptions = computed(() => {
+  const pid = Number(filterProjectId.value)
+  if (!Number.isFinite(pid) || pid <= 0) return platformOptions.value || []
+  const allow = new Set(filterProjectEnabledPlatformIds.value || [])
+  if (!allow.size) return platformOptions.value || []
+  return (platformOptions.value || []).filter((p) => allow.has(Number(p.id)))
+})
+
+const brandNameById = computed(() => {
+  const m = new Map()
+  for (const b of brandOptions.value || []) m.set(Number(b.id), b.name)
+  return m
+})
+
+const platformNameById = computed(() => {
+  const m = new Map()
+  for (const p of platformOptions.value || []) m.set(Number(p.id), p.name)
+  return m
+})
+
+const triggerTypeLabel = (t) => {
+  const s = String(t || '').toLowerCase()
+  if (s === 'manual') return '手动'
+  if (s === 'schedule') return '定时'
+  if (s === 'custom') return '自定义'
+  return s || '-'
+}
+
 const fetchOptions = async () => {
   optionsLoading.value = true
   try {
@@ -171,6 +225,8 @@ const fetchReports = async () => {
 
     const params = buildParams({
       project_id: filterProjectId.value ? Number(filterProjectId.value) : undefined,
+      brand_id: filterBrandId.value ? Number(filterBrandId.value) : undefined,
+      platform_id: filterPlatformId.value ? Number(filterPlatformId.value) : undefined,
       report_type: filterReportType.value || undefined,
       time_from: timeFrom || undefined,
       time_to: timeTo || undefined,
@@ -189,6 +245,8 @@ const fetchReports = async () => {
 
 const resetFilters = async () => {
   filterProjectId.value = ''
+  filterBrandId.value = ''
+  filterPlatformId.value = ''
   filterReportType.value = ''
   filterTimeRange.value = []
   filterCreatedRange.value = []
@@ -231,7 +289,7 @@ const openCitations = async (row) => {
 const confirmDelete = async (row) => {
   if (!row?.id) return
   try {
-    await ElMessageBox.confirm('确认删除该报告？删除后不可恢复。', '二次确认', {
+    await ElMessageBox.confirm('确认删除该报告？删除后不可恢复。', '操作确认', {
       confirmButtonText: '删除',
       cancelButtonText: '取消',
       type: 'warning',
@@ -448,6 +506,16 @@ watch(
   }
 )
 
+watch(
+  () => filterProjectId.value,
+  async () => {
+    // reset list filters when project changes
+    filterBrandId.value = ''
+    filterPlatformId.value = ''
+    await fetchReports()
+  }
+)
+
 onBeforeUnmount(() => {
   disposeCharts()
 })
@@ -468,6 +536,18 @@ onMounted(async () => {
         <el-form-item label="项目">
           <el-select v-model="filterProjectId" placeholder="全部" clearable filterable style="width: 220px">
             <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="String(p.id)" />
+          </el-select>
+        </el-form-item>
+
+        <el-form-item label="品牌">
+          <el-select v-model="filterBrandId" placeholder="全部" clearable filterable style="width: 180px">
+            <el-option v-for="b in filteredFilterBrandOptions" :key="b.id" :label="b.name" :value="String(b.id)" />
+          </el-select>
+        </el-form-item>
+
+        <el-form-item label="平台">
+          <el-select v-model="filterPlatformId" placeholder="全部" clearable filterable style="width: 180px">
+            <el-option v-for="p in filteredFilterPlatformOptions" :key="p.id" :label="p.name" :value="String(p.id)" />
           </el-select>
         </el-form-item>
 
@@ -509,6 +589,21 @@ onMounted(async () => {
           </template>
         </el-table-column>
         <el-table-column prop="projectName" label="所属项目" min-width="160" show-overflow-tooltip />
+        <el-table-column label="品牌" width="140" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span>{{ brandNameById.get(Number(row.brandId)) || (row.brandId != null ? `#${row.brandId}` : '-') }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="平台" width="140" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span>{{ platformNameById.get(Number(row.platformId)) || (row.platformId != null ? `#${row.platformId}` : '-') }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="生成方式" width="110">
+          <template #default="{ row }">
+            <span>{{ triggerTypeLabel(row.triggerType) }}</span>
+          </template>
+        </el-table-column>
         <el-table-column label="数据时间范围" min-width="200">
           <template #default="{ row }">
             <span>{{ row.timeStart ? String(row.timeStart).slice(0, 10) : row.rangeFrom || '-' }}</span>
@@ -516,7 +611,7 @@ onMounted(async () => {
             <span>{{ row.timeEnd ? String(row.timeEnd).slice(0, 10) : row.rangeTo || '-' }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="createdAt" label="创建时间" width="180">
+        <el-table-column prop="createdAt" label="生成时间" width="180">
           <template #default="{ row }">
             <span>{{ row.createdAt ? String(row.createdAt).replace('T', ' ').slice(0, 19) : '-' }}</span>
           </template>
@@ -597,14 +692,14 @@ onMounted(async () => {
         <el-divider content-position="left">分析选项</el-divider>
         <el-form-item label="展示模块">
           <el-checkbox-group v-model="formIncludeSections">
-            <el-checkbox v-for="s in sectionOptions" :key="s.value" :label="s.value">{{ s.label }}</el-checkbox>
+            <el-checkbox v-for="s in sectionOptions" :key="s.value" :value="s.value">{{ s.label }}</el-checkbox>
           </el-checkbox-group>
         </el-form-item>
 
         <el-divider content-position="left">输出配置</el-divider>
         <el-form-item label="导出格式">
           <el-checkbox-group v-model="formExportFormats">
-            <el-checkbox v-for="f in exportFormatOptions" :key="f.value" :label="f.value">{{ f.label }}</el-checkbox>
+            <el-checkbox v-for="f in exportFormatOptions" :key="f.value" :value="f.value">{{ f.label }}</el-checkbox>
           </el-checkbox-group>
         </el-form-item>
 
