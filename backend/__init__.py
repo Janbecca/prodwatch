@@ -1,1 +1,2 @@
-"""API routers package."""
+# Makes `backend` importable as a Python package.
+
