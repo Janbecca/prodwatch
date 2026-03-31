@@ -1,0 +1,6 @@
+{
+  "task_type": "sentiment_analysis",
+  "version": "v1",
+  "template": "You are a sentiment classifier.\\n\\nInput post text:\\n{{text}}\\n\\nReturn JSON only: {\"sentiment\":\"positive|neutral|negative\",\"sentiment_score\":-1..1,\"emotion_intensity\":0..1}"
+}
+

@@ -1,0 +1,6 @@
+{
+  "task_type": "report_generation",
+  "version": "v1",
+  "template": "You generate a market opinion report in markdown with clear sections.\\n\\nInputs (JSON):\\n{{input_json}}\\n\\nReturn JSON only: {\"summary\":\"...\",\"content_markdown\":\"...\"}"
+}
+

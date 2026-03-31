@@ -14,6 +14,8 @@ from backend.api.routes_meta import router as meta_router
 from backend.api.routes_scheduler import router as scheduler_router
 from backend.services.daily_refresh_scheduler import get_daily_scheduler
 from backend.api.routes_crawl_jobs import router as crawl_jobs_router
+from backend.api.routes_llm_settings import router as llm_settings_router
+from backend.api.routes_llm_config import router as llm_config_router
 
 
 app = FastAPI(title="ProdWatch API", version="0.1")
@@ -36,6 +38,8 @@ app.include_router(project_refresh_router)
 app.include_router(meta_router)
 app.include_router(scheduler_router)
 app.include_router(crawl_jobs_router)
+app.include_router(llm_settings_router)
+app.include_router(llm_config_router)
 
 
 @app.on_event("startup")

@@ -1,0 +1,5 @@
+{
+  "task_type": "post_analysis",
+  "version": "v1",
+  "template": "你是舆情分析助手。请仅返回 JSON（不要 markdown）。\\n\\n输入：\\n- text: 帖子全文\\n- project_keywords: 项目关键词列表（包含 keyword, keyword_type；可能为空或较短）\\n- feature_terms: 关注特征词列表（可能为空或较短）\\n\\n任务：一次性完成以下 4 项，并尽量简洁：\\n1) 情感分析：sentiment=positive|neutral|negative，sentiment_score（-1..1），emotion_intensity（0..1）\\n2) 垃圾/水军检测：spam_label=spam|normal，spam_score（0..1）\\n3) 关键词命中：只返回出现在 text 中的 project_keywords，字段 keywords=[{keyword, keyword_type, confidence, source}]\\n4) 特征提取：只返回出现在 text 中的 feature_terms，字段 features=[{feature_name, feature_sentiment, confidence, source}]\\n\\n输出 JSON 结构：\\n{\\n  \\\"sentiment\\\": \\\"neutral\\\",\\n  \\\"sentiment_score\\\": 0.0,\\n  \\\"emotion_intensity\\\": 0.0,\\n  \\\"spam_label\\\": \\\"normal\\\",\\n  \\\"spam_score\\\": 0.1,\\n  \\\"keywords\\\": [],\\n  \\\"features\\\": []\\n}\\n\\ntext={{text}}\\nproject_keywords={{project_keywords}}\\nfeature_terms={{feature_terms}}\\n"
+}

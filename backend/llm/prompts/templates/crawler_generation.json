@@ -1,0 +1,6 @@
+{
+  "task_type": "crawler_generation",
+  "version": "v1",
+  "template":  "You are a simulated crawler.Generate posts for the target.\\n\\nTarget context (JSON):\\n{{input_json}}\\n\\nReturn JSON only: {\"posts\":[{\"platform_id\":...,\"brand_id\":...,\"title\":\"...\",\"content\":\"...\",\"post_url\":\"...\",\"publish_time\":\"YYYY-MM-DD HH:MM:SS\",\"like_count\":0,\"comment_count\":0,\"share_count\":0,\"view_count\":0,\"raw_payload\":\"...\"}]}"
+}
+

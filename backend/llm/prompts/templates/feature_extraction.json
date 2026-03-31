@@ -1,0 +1,6 @@
+{
+  "task_type": "feature_extraction",
+  "version": "v1",
+  "template": "You extract product feature mentions and their sentiment.\\n\\nPost text:\\n{{text}}\\n\\nCandidate feature terms (JSON):\\n{{feature_terms}}\\n\\nReturn JSON only: {\"hits\":[{\"feature_name\":\"...\",\"feature_sentiment\":\"positive|neutral|negative\",\"confidence\":0..1}]}"
+}
+

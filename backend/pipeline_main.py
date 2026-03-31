@@ -14,6 +14,7 @@ from backend.services.analyzer_service import (
     FeatureHit,
     KeywordHit,
     MockRuleAnalyzerService,
+    PostAnalysisAnalyzerService,
     PostInput,
     ProjectKeyword,
     SentimentResult,
@@ -761,7 +762,7 @@ def run_analysis(con: sqlite3.Connection, project_id: int, post_ids: list[int]) 
         for r in keyword_rows
         if (r["keyword"] or "").strip() != ""
     ]
-    analyzer = MockRuleAnalyzerService.for_project(project_keywords)
+    analyzer = PostAnalysisAnalyzerService.for_project(project_keywords, con=con)
 
     for post_id in post_ids:
         row = con.execute(

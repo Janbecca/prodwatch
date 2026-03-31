@@ -12,6 +12,9 @@
     <el-menu-item index="/project-config">
       <span>项目配置</span>
     </el-menu-item>
+    <el-menu-item index="/llm-config">
+      <span>LLM 配置</span>
+    </el-menu-item>
   </el-menu>
 </template>
 
@@ -28,4 +31,3 @@ const activePath = computed(() => route.path)
   border-right: 0;
 }
 </style>
-

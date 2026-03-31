@@ -1,0 +1,6 @@
+{
+  "task_type": "keyword_extraction",
+  "version": "v1",
+  "template": "You extract project monitoring keywords from a post.\\n\\nPost text:\\n{{text}}\\n\\nProject keywords (JSON):\\n{{project_keywords}}\\n\\nReturn JSON only: {\"hits\":[{\"keyword\":\"...\",\"keyword_type\":\"...\",\"confidence\":0..1}]}"
+}
+

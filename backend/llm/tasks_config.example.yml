@@ -1,0 +1,21 @@
+# Example: per-task provider/model mapping.
+llm_tasks:
+  crawler_generation:
+    provider: mock
+    model: mock-v1
+  sentiment_analysis:
+    provider: qwen
+    model: qwen-plus
+  keyword_extraction:
+    provider: qwen
+    model: qwen-plus
+  feature_extraction:
+    provider: qwen
+    model: qwen-plus
+  spam_detection:
+    provider: qwen
+    model: qwen-plus
+  report_generation:
+    provider: deepseek
+    model: deepseek-chat
+

@@ -1,0 +1,6 @@
+{
+  "task_type": "spam_detection",
+  "version": "v1",
+  "template": "You detect spam/water-army content.\\n\\nPost text:\\n{{text}}\\n\\nReturn JSON only: {\"spam_label\":\"spam|normal\",\"spam_score\":0..1}"
+}
+
