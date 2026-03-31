@@ -9,6 +9,17 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Iterable, Optional
 
+from backend.services.analyzer_service import (
+    CleanPostResult,
+    FeatureHit,
+    KeywordHit,
+    MockRuleAnalyzerService,
+    PostInput,
+    ProjectKeyword,
+    SentimentResult,
+    SpamResult,
+)
+
 
 DB_DEFAULT_PATH = "backend/database/database.sqlite"
 
@@ -19,6 +30,12 @@ def resolve_db_path(db_path: str) -> str:
     If `db_path` exists but doesn't look like the expected schema, try a sibling fallback.
     """
     if not os.path.exists(db_path):
+        folder = os.path.dirname(db_path) or "."
+        base = os.path.basename(db_path)
+        if base == "database.sqlite":
+            alt = os.path.join(folder, "database..sqlite")
+            if os.path.exists(alt):
+                return alt
         raise FileNotFoundError(db_path)
 
     def has_project_table(path: str) -> bool:
@@ -237,17 +254,63 @@ def create_crawl_job(
     schedule_expr: Optional[str] = None,
     created_by: str = "system",
 ) -> int:
-    ts = now_ts()
-    con.execute(
-        """
-        INSERT INTO crawl_job(
-          project_id, job_type, trigger_source, schedule_type, schedule_expr,
-          status, started_at, ended_at, created_by, error_message
+    """
+    Create a crawl job record in a deterministic lifecycle:
+    pending -> running -> (success|failed).
+
+    Notes:
+    - `finished_at` is a newer column that may not exist in older DBs; we write it when available.
+    - Keep the job creation separate from "start" so it's easy to move to async execution later.
+    """
+    try:
+        con.execute(
+            """
+            INSERT INTO crawl_job(
+              project_id, job_type, trigger_source, schedule_type, schedule_expr,
+              status, started_at, ended_at, finished_at, created_by, error_message
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """,
+            (
+                project_id,
+                job_type,
+                trigger_source,
+                schedule_type,
+                schedule_expr,
+                "pending",
+                None,
+                None,
+                None,
+                created_by,
+                None,
+            ),
         )
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-        """,
-        (project_id, job_type, trigger_source, schedule_type, schedule_expr, "running", ts, None, created_by, None),
-    )
+    except sqlite3.OperationalError as e:
+        # Backward compatibility: DB without `finished_at`.
+        msg = str(e).lower()
+        if ("no such column" not in msg) and ("has no column named" not in msg):
+            raise
+        con.execute(
+            """
+            INSERT INTO crawl_job(
+              project_id, job_type, trigger_source, schedule_type, schedule_expr,
+              status, started_at, ended_at, created_by, error_message
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """,
+            (
+                project_id,
+                job_type,
+                trigger_source,
+                schedule_type,
+                schedule_expr,
+                "pending",
+                None,
+                None,
+                created_by,
+                None,
+            ),
+        )
     return int(con.execute("SELECT last_insert_rowid();").fetchone()[0])
 
 
@@ -260,6 +323,47 @@ class CrawlTarget:
     keyword: str
 
 
+def _crawl_job_target_has_columns(con: sqlite3.Connection, names: list[str]) -> bool:
+    try:
+        cols = {r[1] for r in con.execute("PRAGMA table_info(crawl_job_target);").fetchall()}
+        return all(n in cols for n in names)
+    except sqlite3.Error:
+        return False
+
+
+def mark_crawl_job_target_status(con: sqlite3.Connection, target_id: int, status: str) -> None:
+    """
+    Best-effort per-target status tracking (pending/running/success/failed).
+    No-op on older DBs without the `status` column.
+    """
+    try:
+        con.execute("UPDATE crawl_job_target SET status=? WHERE id=?;", (str(status), int(target_id)))
+    except sqlite3.OperationalError as e:
+        if "no such column" in str(e).lower():
+            return
+        raise
+
+
+def mark_all_targets_failed(con: sqlite3.Connection, crawl_job_id: int) -> None:
+    """
+    Best-effort: mark all pending/running targets as failed when a job aborts.
+    """
+    try:
+        con.execute(
+            """
+            UPDATE crawl_job_target
+            SET status='failed'
+            WHERE crawl_job_id=?
+              AND (status IS NULL OR status IN ('pending','running'));
+            """,
+            (int(crawl_job_id),),
+        )
+    except sqlite3.OperationalError as e:
+        if "no such column" in str(e).lower():
+            return
+        raise
+
+
 def generate_crawl_job_targets(
     con: sqlite3.Connection,
     crawl_job_id: int,
@@ -267,9 +371,39 @@ def generate_crawl_job_targets(
     brand_ids: list[int],
     keywords: list[str],
 ) -> list[CrawlTarget]:
+    has_rich_cols = _crawl_job_target_has_columns(con, ["project_id", "status", "created_at"])
+    project_id: Optional[int] = None
+    if has_rich_cols:
+        row = con.execute("SELECT project_id FROM crawl_job WHERE id=? LIMIT 1;", (int(crawl_job_id),)).fetchone()
+        project_id = int(row["project_id"]) if row and row["project_id"] is not None else None
+
     for platform_id in platform_ids:
         for brand_id in brand_ids:
             for keyword in keywords:
+                if has_rich_cols and project_id is not None:
+                    try:
+                        con.execute(
+                            """
+                            INSERT OR IGNORE INTO crawl_job_target(
+                              crawl_job_id, project_id, platform_id, brand_id, keyword, status, created_at
+                            )
+                            VALUES(?, ?, ?, ?, ?, ?, ?);
+                            """,
+                            (
+                                int(crawl_job_id),
+                                int(project_id),
+                                int(platform_id),
+                                int(brand_id),
+                                str(keyword),
+                                "pending",
+                                now_ts(),
+                            ),
+                        )
+                        continue
+                    except sqlite3.OperationalError as e:
+                        if "no such column" not in str(e).lower():
+                            raise
+
                 con.execute(
                     """
                     INSERT INTO crawl_job_target(crawl_job_id, platform_id, brand_id, keyword)
@@ -355,6 +489,7 @@ def build_post_candidates(
 
     candidates: list[PostCandidate] = []
     for t in targets:
+        mark_crawl_job_target_status(con, t.id, "running")
         platform_code, _ = platform_map.get(t.platform_id, (f"p{t.platform_id}", ""))
         brand_name = brand_map.get(t.brand_id, f"b{t.brand_id}")
         for i in range(posts_per_target):
@@ -408,6 +543,7 @@ def build_post_candidates(
                     created_at=ts,
                 )
             )
+        mark_crawl_job_target_status(con, t.id, "success")
     return candidates
 
 
@@ -506,45 +642,25 @@ def ensure_post_brand_relation(con: sqlite3.Connection, post_id: int, brand_id: 
     )
 
 
-def insert_clean_result(con: sqlite3.Connection, post_id: int, clean_text: str) -> None:
+def insert_clean_result(con: sqlite3.Connection, post_id: int, result: CleanPostResult) -> None:
     exists = fetch_one_int(con, "SELECT 1 FROM post_clean_result WHERE post_id=? LIMIT 1;", (post_id,))
     if exists is not None:
         return
     ts = now_ts()
-    text = clean_text.strip()
-    is_valid = 1 if text else 0
-    invalid_reason = None if is_valid else "empty"
-    language = "zh" if any("\u4e00" <= ch <= "\u9fff" for ch in text) else "en"
     con.execute(
         """
         INSERT INTO post_clean_result(post_id, is_valid, invalid_reason, clean_text, language, analyzed_at)
         VALUES(?, ?, ?, ?, ?, ?);
         """,
-        (post_id, is_valid, invalid_reason, text, language, ts),
+        (post_id, int(result.is_valid or 0), result.invalid_reason, result.clean_text, result.language, ts),
     )
 
 
-def insert_sentiment_result(con: sqlite3.Connection, post_id: int, text: str) -> None:
+def insert_sentiment_result(con: sqlite3.Connection, post_id: int, result: SentimentResult) -> None:
     exists = fetch_one_int(con, "SELECT 1 FROM post_sentiment_result WHERE post_id=? LIMIT 1;", (post_id,))
     if exists is not None:
         return
     ts = now_ts()
-    positive_terms = ["good", "love", "recommend", "satisfied", "great", "awesome"]
-    negative_terms = ["bad", "disappointed", "trash", "lag", "overheat", "refund"]
-    score = 0.0
-    for t in positive_terms:
-        if t in text:
-            score += 0.2
-    for t in negative_terms:
-        if t in text:
-            score -= 0.2
-    score = max(-1.0, min(1.0, score))
-    if score > 0.1:
-        sentiment = "positive"
-    elif score < -0.1:
-        sentiment = "negative"
-    else:
-        sentiment = "neutral"
     con.execute(
         """
         INSERT INTO post_sentiment_result(
@@ -552,100 +668,104 @@ def insert_sentiment_result(con: sqlite3.Connection, post_id: int, text: str) ->
         )
         VALUES(?, ?, ?, ?, ?, ?);
         """,
-        (post_id, sentiment, score, abs(score), "mock-v1", ts),
+        (
+            post_id,
+            result.sentiment,
+            float(result.sentiment_score or 0.0),
+            float(result.emotion_intensity or 0.0),
+            result.model_version,
+            ts,
+        ),
     )
 
 
-def insert_spam_result(con: sqlite3.Connection, post_id: int, text: str) -> None:
+def insert_spam_result(con: sqlite3.Connection, post_id: int, result: SpamResult) -> None:
     exists = fetch_one_int(con, "SELECT 1 FROM post_spam_result WHERE post_id=? LIMIT 1;", (post_id,))
     if exists is not None:
         return
     ts = now_ts()
-    spam_terms = ["free", "discount", "referral", "dm me", "scan qr", "add me"]
-    hit = any(t in text for t in spam_terms)
-    spam_label = "spam" if hit else "normal"
-    spam_score = 0.9 if hit else 0.1
     con.execute(
         """
         INSERT INTO post_spam_result(post_id, spam_label, spam_score, analyzed_at)
         VALUES(?, ?, ?, ?);
         """,
-        (post_id, spam_label, spam_score, ts),
+        (post_id, result.spam_label, float(result.spam_score or 0.0), ts),
     )
 
 
 def insert_keyword_results(
-    con: sqlite3.Connection, post_id: int, text: str, project_keywords: list[sqlite3.Row]
+    con: sqlite3.Connection, post_id: int, hits: list[KeywordHit]
 ) -> None:
     ts = now_ts()
-    for kw_row in project_keywords:
-        kw = str(kw_row["keyword"])
-        if kw and kw in text:
-            exists = fetch_one_int(
-                con,
-                "SELECT 1 FROM post_keyword_result WHERE post_id=? AND keyword=? LIMIT 1;",
-                (post_id, kw),
-            )
-            if exists is not None:
-                continue
-            kw_type = kw_row["keyword_type"]
-            con.execute(
-                """
-                INSERT INTO post_keyword_result(post_id, keyword, keyword_type, confidence, analyzed_at)
-                VALUES(?, ?, ?, ?, ?);
-                """,
-                (post_id, kw, kw_type, 0.9, ts),
-            )
+    for hit in hits:
+        kw = str(hit.keyword)
+        if not kw:
+            continue
+        exists = fetch_one_int(
+            con,
+            "SELECT 1 FROM post_keyword_result WHERE post_id=? AND keyword=? LIMIT 1;",
+            (post_id, kw),
+        )
+        if exists is not None:
+            continue
+        con.execute(
+            """
+            INSERT INTO post_keyword_result(post_id, keyword, keyword_type, confidence, analyzed_at)
+            VALUES(?, ?, ?, ?, ?);
+            """,
+            (post_id, kw, hit.keyword_type, float(hit.confidence or 0.0), ts),
+        )
 
 
 def insert_feature_results(
-    con: sqlite3.Connection, post_id: int, text: str, feature_terms: list[str]
+    con: sqlite3.Connection, post_id: int, hits: list[FeatureHit]
 ) -> None:
     ts = now_ts()
-    for f in feature_terms:
-        if f in text:
-            exists = fetch_one_int(
-                con,
-                "SELECT 1 FROM post_feature_result WHERE post_id=? AND feature_name=? LIMIT 1;",
-                (post_id, f),
-            )
-            if exists is not None:
-                continue
-            feature_sentiment = "neutral"
-            if any(t in text for t in ["bad", "disappointed", "lag", "overheat"]):
-                feature_sentiment = "negative"
-            elif any(t in text for t in ["good", "recommend", "satisfied", "great"]):
-                feature_sentiment = "positive"
-            con.execute(
-                """
-                INSERT INTO post_feature_result(post_id, feature_name, feature_sentiment, confidence, analyzed_at)
-                VALUES(?, ?, ?, ?, ?);
-                """,
-                (post_id, f, feature_sentiment, 0.8, ts),
-            )
+    for hit in hits:
+        f = str(hit.feature_name)
+        if not f:
+            continue
+        exists = fetch_one_int(
+            con,
+            "SELECT 1 FROM post_feature_result WHERE post_id=? AND feature_name=? LIMIT 1;",
+            (post_id, f),
+        )
+        if exists is not None:
+            continue
+        con.execute(
+            """
+            INSERT INTO post_feature_result(post_id, feature_name, feature_sentiment, confidence, analyzed_at)
+            VALUES(?, ?, ?, ?, ?);
+            """,
+            (post_id, f, hit.feature_sentiment, float(hit.confidence or 0.0), ts),
+        )
 
 
 def run_analysis(con: sqlite3.Connection, project_id: int, post_ids: list[int]) -> None:
-    project_keywords = con.execute(
+    keyword_rows = con.execute(
         """
-        SELECT keyword, keyword_type
+        SELECT keyword, keyword_type, weight, is_enabled
         FROM project_keyword
         WHERE project_id=? AND is_enabled=1
         ORDER BY COALESCE(weight, 0) DESC, id;
         """,
         (project_id,),
     ).fetchall()
-    default_features = ["battery", "camera", "price", "support", "performance", "design", "lag", "overheat"]
-    feature_terms = [
-        str(r["keyword"]) for r in project_keywords if (r["keyword_type"] or "").lower() == "feature"
+    project_keywords = [
+        ProjectKeyword(
+            keyword=str(r["keyword"] or ""),
+            keyword_type=r["keyword_type"],
+            weight=int(r["weight"]) if r["weight"] is not None else None,
+            is_enabled=int(r["is_enabled"] or 0),
+        )
+        for r in keyword_rows
+        if (r["keyword"] or "").strip() != ""
     ]
-    for f in default_features:
-        if f not in feature_terms:
-            feature_terms.append(f)
+    analyzer = MockRuleAnalyzerService.for_project(project_keywords)
 
     for post_id in post_ids:
         row = con.execute(
-            "SELECT id, brand_id, title, content FROM post_raw WHERE id=?;",
+            "SELECT id, project_id, platform_id, brand_id, title, content FROM post_raw WHERE id=?;",
             (post_id,),
         ).fetchone()
         if not row:
@@ -653,15 +773,26 @@ def run_analysis(con: sqlite3.Connection, project_id: int, post_ids: list[int]) 
         brand_id = row["brand_id"]
         if brand_id is not None:
             ensure_post_brand_relation(con, int(row["id"]), int(brand_id))
-        title = (row["title"] or "").strip()
-        content = (row["content"] or "").strip()
-        text = (title + "\n" + content).strip()
+        post = PostInput(
+            post_id=int(row["id"]),
+            project_id=int(row["project_id"]),
+            platform_id=int(row["platform_id"]) if row["platform_id"] is not None else None,
+            brand_id=int(row["brand_id"]) if row["brand_id"] is not None else None,
+            title=str(row["title"] or ""),
+            content=str(row["content"] or ""),
+        )
 
-        insert_clean_result(con, post_id, text)
-        insert_sentiment_result(con, post_id, text)
-        insert_keyword_results(con, post_id, text, project_keywords)
-        insert_spam_result(con, post_id, text)
-        insert_feature_results(con, post_id, text, feature_terms)
+        clean = analyzer.clean_post(post)
+        sentiment = analyzer.analyze_sentiment(post)
+        spam = analyzer.detect_spam(post)
+        kw_hits = analyzer.extract_keywords(post, project_keywords)
+        feat_hits = analyzer.extract_features(post)
+
+        insert_clean_result(con, post_id, clean)
+        insert_sentiment_result(con, post_id, sentiment)
+        insert_keyword_results(con, post_id, kw_hits)
+        insert_spam_result(con, post_id, spam)
+        insert_feature_results(con, post_id, feat_hits)
 
 
 def upsert_daily_keyword_metric(
@@ -918,18 +1049,45 @@ def aggregate_daily_metrics(con: sqlite3.Connection, project_id: int, stat_date:
 
 def finalize_job_success(con: sqlite3.Connection, crawl_job_id: int, project_id: int) -> None:
     ts = now_ts()
-    con.execute(
-        "UPDATE crawl_job SET status=?, ended_at=?, error_message=? WHERE id=?;",
-        ("success", ts, None, crawl_job_id),
-    )
+    try:
+        con.execute(
+            "UPDATE crawl_job SET status=?, ended_at=?, finished_at=?, error_message=? WHERE id=?;",
+            ("success", ts, ts, None, crawl_job_id),
+        )
+    except sqlite3.OperationalError as e:
+        msg = str(e).lower()
+        if ("no such column" not in msg) and ("has no column named" not in msg):
+            raise
+        con.execute(
+            "UPDATE crawl_job SET status=?, ended_at=?, error_message=? WHERE id=?;",
+            ("success", ts, None, crawl_job_id),
+        )
     con.execute("UPDATE project SET last_refresh_at=?, updated_at=? WHERE id=?;", (ts, ts, project_id))
 
 
 def finalize_job_failed(con: sqlite3.Connection, crawl_job_id: int, error_message: str) -> None:
     ts = now_ts()
+    msg = error_message[:500] if error_message else ""
+    try:
+        con.execute(
+            "UPDATE crawl_job SET status=?, ended_at=?, finished_at=?, error_message=? WHERE id=?;",
+            ("failed", ts, ts, msg, crawl_job_id),
+        )
+    except sqlite3.OperationalError as e:
+        msg2 = str(e).lower()
+        if ("no such column" not in msg2) and ("has no column named" not in msg2):
+            raise
+        con.execute(
+            "UPDATE crawl_job SET status=?, ended_at=?, error_message=? WHERE id=?;",
+            ("failed", ts, msg, crawl_job_id),
+        )
+
+
+def mark_job_running(con: sqlite3.Connection, crawl_job_id: int) -> None:
+    ts = now_ts()
     con.execute(
-        "UPDATE crawl_job SET status=?, ended_at=?, error_message=? WHERE id=?;",
-        ("failed", ts, error_message[:500], crawl_job_id),
+        "UPDATE crawl_job SET status=?, started_at=?, error_message=? WHERE id=?;",
+        ("running", ts, None, crawl_job_id),
     )
 
 
@@ -983,6 +1141,7 @@ def run_pipeline_with_trigger(
         created_by=created_by,
     )
     try:
+        mark_job_running(con, crawl_job_id)
         targets = generate_crawl_job_targets(con, crawl_job_id, platform_ids, brand_ids, keywords)
         candidates = build_post_candidates(con, project_id, crawl_job_id, targets, stat_date, posts_per_target)
 
@@ -995,6 +1154,10 @@ def run_pipeline_with_trigger(
         finalize_job_success(con, crawl_job_id, project_id)
         return crawl_job_id
     except Exception as e:
+        try:
+            mark_all_targets_failed(con, crawl_job_id)
+        except Exception:
+            pass
         finalize_job_failed(con, crawl_job_id, str(e))
         raise
 

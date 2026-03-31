@@ -9,7 +9,7 @@
 `.\.venv\Scripts\Activate.ps1`
 ### 启动后端：
 1. `pip install -r backend/requirements.txt`
-2. `uvicorn backend.main:app --reload`
+2. `.\.venv\Scripts\python.exe -m uvicorn backend.api.app:app --reload`
 3. Swagger 文档：`http://127.0.0.1:8000/docs`
 ### 启动前端：
 1. `cd frontend`
