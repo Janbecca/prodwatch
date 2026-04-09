@@ -1,3 +1,5 @@
+# 作用：后端链路：仪表盘分析链路编排（链路 C）。
+
 from __future__ import annotations
 
 import argparse
@@ -9,7 +11,7 @@ from datetime import datetime, timedelta
 from typing import Any, Optional
 
 def connect(db_path: str) -> sqlite3.Connection:
-    con = sqlite3.connect(db_path)
+    con = sqlite3.connect(db_path, check_same_thread=False)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys = ON;")
     con.execute("PRAGMA journal_mode = WAL;")

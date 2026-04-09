@@ -1,26 +1,28 @@
+<!-- 作用：前端组件：仪表盘模块组件（DashboardFilters）。 -->
+
 <template>
-  <PageSection title="Filters">
+  <PageSection title="筛选">
     <el-form :inline="true" label-width="90px">
-      <el-form-item label="Project">
+      <el-form-item label="项目">
         <el-space wrap>
           <el-select
             v-model="projectModel"
             :disabled="locked || store.loading || enabledProjects.length === 0"
             style="width: 260px"
-            placeholder="Select an enabled project"
+            placeholder="请选择已启用项目"
           >
             <el-option v-for="p in enabledProjects" :key="p.id" :label="p.name" :value="p.id" />
           </el-select>
 
-          <el-button v-if="!locked" :loading="store.loading" @click="store.fetchProjects()">Reload</el-button>
+          <el-button v-if="!locked" :loading="store.loading" @click="store.fetchProjects()">重载</el-button>
 
-          <el-tag v-if="store.activeProject && isActiveProjectEnabled" type="info">ID: {{ store.activeProject.id }}</el-tag>
-          <el-text v-else type="info">No enabled project</el-text>
+          <el-tag v-if="store.activeProject && isActiveProjectEnabled" type="info">项目编号：{{ store.activeProject.id }}</el-tag>
+          <el-text v-else type="info">暂无启用项目</el-text>
           <el-text v-if="store.error" type="danger">{{ store.error }}</el-text>
         </el-space>
       </el-form-item>
 
-      <el-form-item label="Brands">
+      <el-form-item label="品牌">
         <el-select
           :model-value="dashboard.brandIds"
           multiple
@@ -35,7 +37,7 @@
         </el-select>
       </el-form-item>
 
-      <el-form-item label="Platforms">
+      <el-form-item label="平台">
         <el-select
           :model-value="dashboard.platformIds"
           multiple
@@ -50,23 +52,23 @@
         </el-select>
       </el-form-item>
 
-      <el-form-item label="Time">
+      <el-form-item label="时间">
         <el-select :model-value="dashboard.timeKey" style="width: 160px" @update:model-value="dashboard.setTimeKey">
-          <el-option label="Last 7 days" value="7d" />
-          <el-option label="Last 14 days" value="14d" />
-          <el-option label="Last 30 days" value="30d" />
-          <el-option label="Custom" value="custom" />
+          <el-option label="最近 7 天" value="7d" />
+          <el-option label="最近 14 天" value="14d" />
+          <el-option label="最近 30 天" value="30d" />
+          <el-option label="自定义" value="custom" />
         </el-select>
       </el-form-item>
 
-      <el-form-item v-if="dashboard.timeKey === 'custom'" label="Range">
+      <el-form-item v-if="dashboard.timeKey === 'custom'" label="范围">
         <el-date-picker
           :model-value="dashboard.customRange"
           type="daterange"
           value-format="YYYY-MM-DD"
-          range-separator="to"
-          start-placeholder="Start date"
-          end-placeholder="End date"
+          range-separator="至"
+          start-placeholder="开始日期"
+          end-placeholder="结束日期"
           style="width: 280px"
           :disabled="!hasEnabledProject"
           @update:model-value="dashboard.setCustomRange"
@@ -77,10 +79,10 @@
         <el-button
           :loading="dashboard.refreshLoading"
           type="primary"
-          :disabled="!hasEnabledProject"
+          :disabled="!hasEnabledProject || dashboard.refreshLoading || dashboard.scopeLoading"
           @click="dashboard.manualRefresh()"
         >
-          Manual refresh
+          手动刷新
         </el-button>
       </el-form-item>
     </el-form>
@@ -88,7 +90,7 @@
     <el-alert
       v-if="store.issues && store.issues.length"
       style="margin-top: 10px"
-      title="Project self-check found issues"
+      title="项目自检发现问题"
       type="warning"
       :closable="false"
       show-icon
@@ -102,7 +104,7 @@
       v-if="enabledProjects.length === 0 && !store.loading"
       style="margin-top: 10px"
       type="warning"
-      title="No enabled projects. Enable one in Project Config first."
+      title="暂无启用项目，请先在“项目配置”中启用一个项目。"
       show-icon
       :closable="false"
     />
@@ -164,4 +166,3 @@ const projectModel = computed({
   },
 })
 </script>
-

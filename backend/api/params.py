@@ -1,3 +1,5 @@
+# 作用：后端 API：请求/查询参数与共享数据结构定义。
+
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -1,3 +1,5 @@
+<!-- 作用：前端组件：项目模块组件（ProjectScopeConfig）。 -->
+
 <template>
   <PageSection title="品牌/平台/关键词配置">
     <el-row :gutter="12">
@@ -30,7 +32,7 @@
             <el-option v-for="k in keywordOptions" :key="k" :label="k" :value="k" />
           </el-select>
           <el-divider />
-          <el-input placeholder="新增关键词（Mock）" />
+          <el-input placeholder="新增关键词" />
         </el-card>
       </el-col>
     </el-row>
@@ -59,4 +61,3 @@ const form = reactive({
   keywords: ['续航', '发热'],
 })
 </script>
-

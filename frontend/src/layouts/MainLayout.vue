@@ -1,8 +1,10 @@
+<!-- 作用：前端布局：页面通用布局与导航框架。 -->
+
 <template>
   <el-container class="app-shell">
-    <el-aside class="app-aside" width="220px">
-      <div class="brand">
-        <div class="brand__title">ProdWatch</div>
+      <el-aside class="app-aside" width="220px">
+        <div class="brand">
+        <div class="brand__title">产品舆情监测</div>
         <div class="brand__sub">舆情系统</div>
       </div>
       <SidebarNav />
@@ -13,10 +15,10 @@
         <div class="header-left">
           <el-text tag="b">舆情系统</el-text>
           <el-divider direction="vertical" />
-          <el-text type="info">前端骨架（Mock 数据）</el-text>
+          <!-- <el-text type="info">前端骨架（模拟数据）</el-text> -->
         </div>
         <div class="header-right">
-          <el-tag type="info">v0</el-tag>
+          <el-tag type="info">版本 0</el-tag>
         </div>
       </el-header>
 
@@ -66,6 +68,11 @@ onMounted(() => {
   justify-content: space-between;
   border-bottom: 1px solid var(--el-border-color);
   background: var(--el-bg-color);
+}
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .app-main {
   background: var(--el-bg-color-page);

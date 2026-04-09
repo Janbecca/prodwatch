@@ -1,3 +1,5 @@
+# 作用：后端链路：报告生成链路编排（链路 E）。
+
 from __future__ import annotations
 
 import argparse
@@ -19,7 +21,7 @@ def parse_date(value: str) -> str:
 
 
 def connect(db_path: str) -> sqlite3.Connection:
-    con = sqlite3.connect(db_path)
+    con = sqlite3.connect(db_path, check_same_thread=False)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys = ON;")
     con.execute("PRAGMA journal_mode = WAL;")

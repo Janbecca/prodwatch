@@ -1,3 +1,5 @@
+# 作用：LLM：模型提供方实现（基类与通用接口）。
+
 from __future__ import annotations
 
 from typing import Any, Protocol

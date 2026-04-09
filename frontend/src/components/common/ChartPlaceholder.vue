@@ -1,3 +1,5 @@
+<!-- 作用：前端组件：通用模块组件（ChartPlaceholder）。 -->
+
 <template>
   <div class="ph">
     <div class="ph__bar" />

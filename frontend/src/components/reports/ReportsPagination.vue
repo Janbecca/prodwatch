@@ -1,3 +1,5 @@
+<!-- 作用：前端组件：报告模块组件（ReportsPagination）。 -->
+
 <template>
   <el-pagination
     :current-page="store.page"

@@ -1,5 +1,7 @@
+<!-- 作用：前端组件：帖子模块组件（PostDetailDrawer）。 -->
+
 <template>
-  <el-drawer v-model="open" size="620px" title="Post Detail" :with-header="true">
+  <el-drawer v-model="open" size="620px" title="帖子详情" :with-header="true">
     <el-alert
       v-if="store.detailError"
       type="error"
@@ -11,55 +13,55 @@
 
     <el-skeleton v-if="store.detailLoading" :rows="6" animated />
 
-    <el-empty v-else-if="!item" description="No detail" />
+    <el-empty v-else-if="!item" description="暂无详情" />
 
     <template v-else>
       <el-descriptions :column="1" border>
-        <el-descriptions-item label="Post ID">{{ item.id }}</el-descriptions-item>
-        <el-descriptions-item label="Title">{{ item.title || '-' }}</el-descriptions-item>
-        <el-descriptions-item label="Post URL">
+        <el-descriptions-item label="帖子编号">{{ item.id }}</el-descriptions-item>
+        <el-descriptions-item label="标题">{{ item.title || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="帖子链接">
           <el-link v-if="item.post_url" :href="item.post_url" target="_blank">{{ item.post_url }}</el-link>
           <span v-else>-</span>
         </el-descriptions-item>
-        <el-descriptions-item label="Publish Time">{{ fmtTime(item.publish_time) }}</el-descriptions-item>
-        <el-descriptions-item label="Crawled At">{{ fmtTime(item.crawled_at) }}</el-descriptions-item>
-        <el-descriptions-item label="Platform">{{ platformName }}</el-descriptions-item>
-        <el-descriptions-item label="Brand">{{ brandName }}</el-descriptions-item>
-        <el-descriptions-item label="Counts">
+        <el-descriptions-item label="发布时间">{{ fmtTime(item.publish_time) }}</el-descriptions-item>
+        <el-descriptions-item label="抓取时间">{{ fmtTime(item.crawled_at) }}</el-descriptions-item>
+        <el-descriptions-item label="平台">{{ platformName }}</el-descriptions-item>
+        <el-descriptions-item label="品牌">{{ brandName }}</el-descriptions-item>
+        <el-descriptions-item label="互动数据">
           <el-space wrap>
-            <el-tag type="info">Likes: {{ num(item.like_count) }}</el-tag>
-            <el-tag type="info">Comments: {{ num(item.comment_count) }}</el-tag>
-            <el-tag type="info">Shares: {{ num(item.share_count) }}</el-tag>
-            <el-tag type="info">Views: {{ item.view_count == null ? '-' : num(item.view_count) }}</el-tag>
+            <el-tag type="info">点赞: {{ num(item.like_count) }}</el-tag>
+            <el-tag type="info">评论: {{ num(item.comment_count) }}</el-tag>
+            <el-tag type="info">分享: {{ num(item.share_count) }}</el-tag>
+            <el-tag type="info">浏览: {{ item.view_count == null ? '-' : num(item.view_count) }}</el-tag>
           </el-space>
         </el-descriptions-item>
-        <el-descriptions-item label="Sentiment">
+        <el-descriptions-item label="情感">
           <el-space wrap>
-            <el-tag :type="sentimentType(item.sentiment)">{{ item.sentiment || '-' }}</el-tag>
-            <el-tag type="info">score: {{ score(item.sentiment_score) }}</el-tag>
-            <el-tag type="info">intensity: {{ score(item.emotion_intensity) }}</el-tag>
+            <el-tag :type="sentimentType(item.sentiment)">{{ sentimentText(item.sentiment) }}</el-tag>
+            <el-tag type="info">分数: {{ score(item.sentiment_score) }}</el-tag>
+            <el-tag type="info">强度: {{ score(item.emotion_intensity) }}</el-tag>
           </el-space>
         </el-descriptions-item>
-        <el-descriptions-item label="Spam">
+        <el-descriptions-item label="垃圾">
           <el-tag :type="(item.spam_label || 'normal') === 'spam' ? 'danger' : 'info'">
-            {{ item.spam_label || 'normal' }}
+            {{ spamText(item.spam_label || 'normal') }}
           </el-tag>
         </el-descriptions-item>
-        <el-descriptions-item label="Valid">
+        <el-descriptions-item label="有效性">
           <el-tag :type="item.is_valid === 1 ? 'success' : item.is_valid === 0 ? 'warning' : 'info'">
-            {{ item.is_valid === 1 ? 'valid' : item.is_valid === 0 ? 'invalid' : '-' }}
+            {{ item.is_valid === 1 ? '有效' : item.is_valid === 0 ? '无效' : '-' }}
           </el-tag>
           <el-text v-if="item.invalid_reason" type="info" style="margin-left: 8px">
             {{ item.invalid_reason }}
           </el-text>
         </el-descriptions-item>
-        <el-descriptions-item label="Hit Keywords">
+        <el-descriptions-item label="命中关键词">
           <el-space wrap>
             <el-tag v-for="k in item.keywords || []" :key="k" size="small">{{ k }}</el-tag>
             <el-text v-if="!item.keywords || item.keywords.length === 0" type="info">-</el-text>
           </el-space>
         </el-descriptions-item>
-        <el-descriptions-item label="Features">
+        <el-descriptions-item label="特征">
           <el-space wrap>
             <el-tag v-for="f in featureTags" :key="f.key" :type="f.type" size="small">{{ f.text }}</el-tag>
             <el-text v-if="featureTags.length === 0" type="info">-</el-text>
@@ -69,10 +71,10 @@
 
       <el-divider />
 
-      <el-text tag="b">Raw Text</el-text>
+      <el-text tag="b">原始文本</el-text>
       <pre class="block">{{ item.content || item.title || '-' }}</pre>
 
-      <el-text tag="b">Clean Text</el-text>
+      <el-text tag="b">清洗文本</el-text>
       <pre class="block">{{ item.clean_text || '-' }}</pre>
     </template>
   </el-drawer>
@@ -149,6 +151,20 @@ function sentimentType(s) {
   if (s === 'negative') return 'danger'
   if (s === 'neutral') return 'info'
   return 'info'
+}
+
+function sentimentText(s) {
+  if (s === 'positive') return '正向'
+  if (s === 'neutral') return '中性'
+  if (s === 'negative') return '负向'
+  return s || '-'
+}
+
+function spamText(s) {
+  const v = String(s || 'normal').toLowerCase()
+  if (v === 'spam') return '垃圾'
+  if (v === 'normal') return '正常'
+  return s || '-'
 }
 </script>
 

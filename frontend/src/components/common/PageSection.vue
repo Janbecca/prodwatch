@@ -1,3 +1,5 @@
+<!-- 作用：前端组件：通用模块组件（PageSection）。 -->
+
 <template>
   <el-card class="section" shadow="never">
     <template #header>

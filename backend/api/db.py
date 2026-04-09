@@ -1,3 +1,5 @@
+# 作用：后端 API：数据库/存储访问封装与依赖注入。
+
 from __future__ import annotations
 
 import os
@@ -13,10 +15,7 @@ EXPECTED_TABLES = {"project", "brand", "platform", "daily_metric", "daily_keywor
 
 def resolve_db_path(db_path: str) -> str:
     """
-    Resolve the sqlite DB path robustly across different working directories.
-
-    Common gotcha: starting uvicorn from `backend/` makes relative paths like
-    `backend/database/database.sqlite` point to `backend/backend/...`.
+    在不同的工作目录中稳健地解析 sqlite 数据库路径。
     """
 
     def has_expected_schema(path: str) -> bool:
@@ -78,14 +77,19 @@ def resolve_db_path(db_path: str) -> str:
 
 def connect(db_path: str) -> sqlite3.Connection:
     # Increase timeout to reduce transient "database is locked" failures when another process is writing.
-    con = sqlite3.connect(db_path, timeout=10)
+    # FastAPI may run sync dependencies and handlers in different worker threads. Disable sqlite's
+    # same-thread guard so a per-request connection can be safely used within that request lifecycle.
+    # Note: this does not eliminate the single-writer nature of SQLite. If a long refresh job is
+    # holding a write transaction, other write requests may still time out; callers should handle
+    # "locked/busy" gracefully (e.g., retry/backoff or return 503/409 with actionable hints).
+    con = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
     con.row_factory = sqlite3.Row
     try:
         con.execute("PRAGMA foreign_keys = ON;")
     except sqlite3.Error:
         pass
     try:
-        con.execute("PRAGMA busy_timeout = 10000;")
+        con.execute("PRAGMA busy_timeout = 30000;")
     except sqlite3.Error:
         pass
     try:
@@ -151,6 +155,44 @@ def get_db() -> Iterator[sqlite3.Connection]:
     except sqlite3.Error as e:
         con.close()
         raise HTTPException(status_code=500, detail=f"SQLite schema check failed: {e}. db_path={db_path}")
+    try:
+        yield con
+    finally:
+        con.close()
+
+
+def get_db_relaxed() -> Iterator[sqlite3.Connection]:
+    """
+    Get a SQLite connection without enforcing the full business schema.
+
+    Why: some endpoints (e.g. LLM configuration) should remain usable even when the main
+    business tables haven't been migrated/seeded yet.
+    """
+    try:
+        db_path = resolve_db_path(DEFAULT_DB_PATH)
+    except FileNotFoundError:
+        # Create a new DB at the default path (repo-root-relative if needed).
+        if os.path.isabs(DEFAULT_DB_PATH):
+            db_path = DEFAULT_DB_PATH
+        else:
+            try:
+                from pathlib import Path
+
+                repo_root = str(Path(__file__).resolve().parents[2])
+                db_path = os.path.join(repo_root, DEFAULT_DB_PATH)
+            except Exception:
+                db_path = DEFAULT_DB_PATH
+        folder = os.path.dirname(db_path)
+        if folder:
+            try:
+                os.makedirs(folder, exist_ok=True)
+            except Exception:
+                pass
+
+    try:
+        con = connect(db_path)
+    except sqlite3.Error as e:
+        raise HTTPException(status_code=500, detail=f"SQLite connect failed: {e}")
     try:
         yield con
     finally:

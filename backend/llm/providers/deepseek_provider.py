@@ -1,3 +1,5 @@
+# 作用：LLM：模型提供方实现（DeepSeek 提供方）。
+
 from __future__ import annotations
 
 import os
@@ -81,6 +83,10 @@ class DeepSeekProvider:
         if t == "report_generation":
             return {
                 "summary": str(parsed.get("summary") or ""),
+                # v2: incremental blocks (preferred)
+                "executive_summary_md": str(parsed.get("executive_summary_md") or ""),
+                "strategy_suggestions_md": str(parsed.get("strategy_suggestions_md") or ""),
+                # v1 compatibility (some providers/users may still return full markdown)
                 "content_markdown": str(parsed.get("content_markdown") or ""),
             }
         # unknown task: still return parsed for debugging

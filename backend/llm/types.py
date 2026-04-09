@@ -1,3 +1,5 @@
+# 作用：LLM：类型定义（请求/响应/追踪字段等）。
+
 from __future__ import annotations
 
 from dataclasses import dataclass

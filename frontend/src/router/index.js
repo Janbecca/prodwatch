@@ -1,3 +1,5 @@
+// 作用：前端路由：页面路由表与导航守卫配置。
+
 import { createRouter, createWebHistory } from 'vue-router'
 
 import MainLayout from '../layouts/MainLayout.vue'

@@ -1,6 +1,8 @@
+<!-- 作用：前端页面：报告列表视图。 -->
+
 <template>
   <el-space direction="vertical" :size="12" fill>
-    <el-empty v-if="!hasProjects" description="No enabled project" />
+    <el-empty v-if="!hasProjects" description="暂无启用项目" />
     <template v-else>
       <ReportsFilters @open-create="openCreate" />
       <ReportsTable />

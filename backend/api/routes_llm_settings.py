@@ -1,3 +1,5 @@
+# 作用：后端 API：LLM 设置相关路由与接口实现。
+
 from __future__ import annotations
 
 import sqlite3
@@ -7,7 +9,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from backend.api.db import get_db
+from backend.api.db import get_db_relaxed
 from backend.llm.config_store import DEFAULT_TASKS, get_llm_config_store
 from backend.llm.provider_factory import get_provider_factory
 from backend.llm.types import LLMTaskConfig
@@ -90,7 +92,7 @@ def list_providers() -> dict[str, Any]:
 
 
 @router.get("/task-config")
-def get_task_configs(db: sqlite3.Connection = Depends(get_db)) -> dict[str, Any]:
+def get_task_configs(db: sqlite3.Connection = Depends(get_db_relaxed)) -> dict[str, Any]:
     # Read-only endpoint should not create tables implicitly; but if the table exists, include overrides.
     tasks = _list_known_task_types(db)
     store = get_llm_config_store()
@@ -134,7 +136,7 @@ def get_task_configs(db: sqlite3.Connection = Depends(get_db)) -> dict[str, Any]
 
 
 @router.put("/task-config")
-def upsert_task_configs(payload: UpdateLLMTaskConfigRequest, db: sqlite3.Connection = Depends(get_db)) -> dict[str, Any]:
+def upsert_task_configs(payload: UpdateLLMTaskConfigRequest, db: sqlite3.Connection = Depends(get_db_relaxed)) -> dict[str, Any]:
     _ensure_llm_task_config_table(db)
     db.commit()
 
@@ -166,10 +168,9 @@ def upsert_task_configs(payload: UpdateLLMTaskConfigRequest, db: sqlite3.Connect
 
 
 @router.delete("/task-config/{task_type}")
-def delete_task_config(task_type: str, db: sqlite3.Connection = Depends(get_db)) -> dict[str, Any]:
+def delete_task_config(task_type: str, db: sqlite3.Connection = Depends(get_db_relaxed)) -> dict[str, Any]:
     if not _has_table(db, "llm_task_config"):
         return get_task_configs(db)
     db.execute("DELETE FROM llm_task_config WHERE task_type=?;", (str(task_type),))
     db.commit()
     return get_task_configs(db)
-

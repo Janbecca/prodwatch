@@ -1,3 +1,5 @@
+# 作用：后端 API：报告相关路由与接口实现。
+
 from __future__ import annotations
 
 import sqlite3
@@ -8,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from backend.api.db import get_db
 from backend.api.params import DateRange, parse_date_range
+from backend.services.refresh_service import get_refresh_service
 from backend.services.report_generation_service import get_report_generation_service
 
 
@@ -342,6 +345,28 @@ def create_report(req: CreateReportRequest, db: sqlite3.Connection = Depends(get
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    # Avoid creating/generating reports while a refresh is running.
+    # Reason: refresh is a long write-heavy operation; SQLite allows only one writer at a time,
+    # which would cause report creation to hit "database is locked/busy" and return 503.
+    try:
+        svc = get_refresh_service()
+        if svc.is_running_in_memory(int(req.project_id)):
+            raise HTTPException(status_code=409, detail="项目正在刷新中，请稍后再新建报告。")
+        row = db.execute(
+            "SELECT id FROM crawl_job WHERE project_id=? AND status='running' ORDER BY id DESC LIMIT 1;",
+            (int(req.project_id),),
+        ).fetchone()
+        if row is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"项目正在刷新中（任务编号={int(row['id'])}），请稍后再新建报告。",
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        # Best-effort only: if the status check fails, continue and let normal create flow decide.
+        pass
+
     title = req.title.strip()
     if title == "":
         raise HTTPException(status_code=400, detail="title must not be empty")
@@ -385,24 +410,85 @@ def create_report(req: CreateReportRequest, db: sqlite3.Connection = Depends(get
             """,
             (int(req.project_id), title, report_type, dr.start_date, dr.end_date),
         )
+    except sqlite3.IntegrityError as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        msg = str(e).lower()
+        if "foreign key constraint failed" in msg:
+            raise HTTPException(status_code=400, detail="项目不存在或已被删除，无法创建报告。")
+        raise HTTPException(status_code=400, detail=f"创建报告失败：{e}")
     except sqlite3.OperationalError as e:
         msg = str(e).lower()
+        if "database is locked" in msg or "database is busy" in msg:
+            raise HTTPException(status_code=503, detail="数据库繁忙（写入被锁定），请稍后重试。")
         if ("no such column" not in msg) and ("has no column named" not in msg):
             raise
-        cur = db.execute(
+        try:
+            cur = db.execute(
+                """
+                INSERT INTO report(
+                  project_id,
+                  title,
+                  report_type,
+                  data_start_date,
+                  data_end_date,
+                  status,
+                  summary,
+                  content_markdown,
+                  created_by,
+                  created_at,
+                  updated_at
+                )
+                VALUES(
+                  ?,
+                  ?,
+                  ?,
+                  ?,
+                  ?,
+                  'pending',
+                  '',
+                  '',
+                  'ui',
+                  datetime('now','localtime'),
+                  datetime('now','localtime')
+                );
+                """,
+                (int(req.project_id), title, report_type, dr.start_date, dr.end_date),
+            )
+        except sqlite3.IntegrityError as e2:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            msg2 = str(e2).lower()
+            if "foreign key constraint failed" in msg2:
+                raise HTTPException(status_code=400, detail="项目不存在或已被删除，无法创建报告。")
+            raise HTTPException(status_code=400, detail=f"创建报告失败：{e2}")
+        except sqlite3.OperationalError as e2:
+            msg2 = str(e2).lower()
+            if "database is locked" in msg2 or "database is busy" in msg2:
+                raise HTTPException(status_code=503, detail="数据库繁忙（写入被锁定），请稍后重试。")
+            raise
+
+    report_id = int(cur.lastrowid)
+
+    try:
+        db.execute(
             """
-            INSERT INTO report(
-              project_id,
-              title,
-              report_type,
-              data_start_date,
-              data_end_date,
-              status,
-              summary,
-              content_markdown,
-              created_by,
-              created_at,
-              updated_at
+            INSERT INTO report_config(
+              report_id,
+              platform_ids,
+              brand_ids,
+              keywords,
+              include_sentiment,
+              include_trend,
+              include_topics,
+              include_feature_analysis,
+              include_spam,
+              include_competitor_compare,
+              include_strategy
             )
             VALUES(
               ?,
@@ -410,62 +496,44 @@ def create_report(req: CreateReportRequest, db: sqlite3.Connection = Depends(get
               ?,
               ?,
               ?,
-              'pending',
-              '',
-              '',
-              'ui',
-              datetime('now','localtime'),
-              datetime('now','localtime')
+              ?,
+              ?,
+              ?,
+              ?,
+              ?,
+              ?
             );
             """,
-            (int(req.project_id), title, report_type, dr.start_date, dr.end_date),
+            (
+                report_id,
+                _csv_ints(req.platform_ids),
+                _csv_ints(req.brand_ids),
+                _csv_strs(req.keywords),
+                1 if req.include_sentiment else 0,
+                1 if req.include_trend else 0,
+                1 if req.include_topics else 0,
+                1 if req.include_feature_analysis else 0,
+                1 if req.include_spam else 0,
+                1 if req.include_competitor_compare else 0,
+                1 if req.include_strategy else 0,
+            ),
         )
-    report_id = int(cur.lastrowid)
-
-    db.execute(
-        """
-        INSERT INTO report_config(
-          report_id,
-          platform_ids,
-          brand_ids,
-          keywords,
-          include_sentiment,
-          include_trend,
-          include_topics,
-          include_feature_analysis,
-          include_spam,
-          include_competitor_compare,
-          include_strategy
-        )
-        VALUES(
-          ?,
-          ?,
-          ?,
-          ?,
-          ?,
-          ?,
-          ?,
-          ?,
-          ?,
-          ?,
-          ?
-        );
-        """,
-        (
-            report_id,
-            _csv_ints(req.platform_ids),
-            _csv_ints(req.brand_ids),
-            _csv_strs(req.keywords),
-            1 if req.include_sentiment else 0,
-            1 if req.include_trend else 0,
-            1 if req.include_topics else 0,
-            1 if req.include_feature_analysis else 0,
-            1 if req.include_spam else 0,
-            1 if req.include_competitor_compare else 0,
-            1 if req.include_strategy else 0,
-        ),
-    )
-    db.commit()
+        db.commit()
+    except sqlite3.IntegrityError as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        raise HTTPException(status_code=400, detail=f"创建报告配置失败：{e}")
+    except sqlite3.OperationalError as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        msg = str(e).lower()
+        if "database is locked" in msg or "database is busy" in msg:
+            raise HTTPException(status_code=503, detail="数据库繁忙（写入被锁定），请稍后重试。")
+        raise HTTPException(status_code=500, detail=f"create report failed: {e}")
 
     # Generate immediately (minimal runnable chain). Keep create success even if generation fails,
     # but set report.status=failed and record error_message for observability.

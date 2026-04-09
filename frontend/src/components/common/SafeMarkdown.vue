@@ -1,3 +1,5 @@
+<!-- 作用：前端组件：通用模块组件（SafeMarkdown）。 -->
+
 <template>
   <div class="md" v-html="html" />
 </template>

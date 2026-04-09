@@ -1,3 +1,5 @@
+# 作用：后端 API：调度器相关路由与接口实现。
+
 from __future__ import annotations
 
 from fastapi import APIRouter

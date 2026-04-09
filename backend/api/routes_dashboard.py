@@ -1,3 +1,5 @@
+# 作用：后端 API：仪表盘相关路由与接口实现。
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta
@@ -356,6 +358,15 @@ def dashboard_keyword_monitor_stacked(
             (*params_base, int(top_n)),
         )
     except sqlite3.Error as e:
+        msg = str(e).lower()
+        if ("no such table" in msg and "daily_keyword_metric" in msg) or ("no such column" in msg):
+            return {
+                "project_id": project_id,
+                "date_range": {"start_date": dr.start_date, "end_date": dr.end_date},
+                "filters": {"platform_ids": platform_ids, "brand_ids": brand_ids},
+                "dates": [],
+                "series": [],
+            }
         if _is_locked_error(e):
             raise HTTPException(status_code=503, detail=f"SQLite busy: {e}")
         raise _sqlite_error(e)
@@ -388,6 +399,15 @@ def dashboard_keyword_monitor_stacked(
             (*params_base, *kw_params),
         )
     except sqlite3.Error as e:
+        msg = str(e).lower()
+        if ("no such table" in msg and "daily_keyword_metric" in msg) or ("no such column" in msg):
+            return {
+                "project_id": project_id,
+                "date_range": {"start_date": dr.start_date, "end_date": dr.end_date},
+                "filters": {"platform_ids": platform_ids, "brand_ids": brand_ids},
+                "dates": [],
+                "series": [],
+            }
         if _is_locked_error(e):
             raise HTTPException(status_code=503, detail=f"SQLite busy: {e}")
         raise _sqlite_error(e)

@@ -1,3 +1,5 @@
+# 作用：LLM：统一调用入口，路由到不同模型提供方并记录调用信息。
+
 from __future__ import annotations
 
 import logging
@@ -288,6 +290,70 @@ class LLMRouter:
                 cfg.fallback_provider,
             )
             return fb_res
+
+        # Final safety-net: always try mock so business chains can degrade gracefully even if
+        # the configured fallback provider also fails.
+        if str(cfg.fallback_provider).strip().lower() != "mock":
+            mock = self.factory.get_or_mock("mock")
+            mock_req = LLMTaskRequest(
+                task_type=str(task_type),
+                input=input or {},
+                prompt_text=prompt_text,
+                prompt_version=prompt_tpl.version,
+                provider="mock",
+                model="mock-v1",
+            )
+            mock_request_obj = {
+                "task_type": task_type,
+                "input": input,
+                "prompt_text": prompt_text,
+                "provider": "mock",
+                "model": "mock-v1",
+                "fallback_from": str(cfg.fallback_provider),
+            }
+            mock_cached = _lookup_cached_ok(
+                con, task_type=task_type, prompt_version=prompt_tpl.version, request_obj=mock_request_obj
+            )
+            if mock_cached is not None:
+                log.info(
+                    "LLM task final_fallback_cache_hit task_type=%s provider=%s model=%s prompt_version=%s",
+                    task_type,
+                    mock_cached.provider,
+                    mock_cached.model,
+                    mock_cached.prompt_version,
+                )
+                return mock_cached
+
+            mock_res = mock.run_task(mock_req)
+            log.info(
+                "LLM task final_fallback_run task_type=%s provider=%s model=%s prompt_version=%s ok=%s",
+                task_type,
+                mock_res.provider,
+                mock_res.model,
+                prompt_tpl.version,
+                bool(mock_res.ok),
+            )
+            log_llm_call(
+                con,
+                task_type=task_type,
+                provider=mock_res.provider,
+                model=mock_res.model,
+                prompt_version=prompt_tpl.version,
+                ok=bool(mock_res.ok),
+                request=mock_request_obj,
+                response={"output": mock_res.output, "error": mock_res.error, "provider": mock_res.provider, "model": mock_res.model},
+                error=mock_res.error,
+            )
+            if mock_res.ok:
+                log.warning(
+                    "LLM task final_fallback task_type=%s provider=%s err=%s fallback=%s fallback_err=%s -> mock",
+                    task_type,
+                    cfg.provider,
+                    res.error,
+                    cfg.fallback_provider,
+                    fb_res.error,
+                )
+                return mock_res
 
         log.error(
             "LLM task failed task_type=%s provider=%s err=%s fallback=%s fallback_err=%s",

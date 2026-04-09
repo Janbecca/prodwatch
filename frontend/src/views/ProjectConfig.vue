@@ -1,3 +1,5 @@
+<!-- 作用：前端页面：项目配置视图。 -->
+
 <template>
   <el-space direction="vertical" :size="12" fill>
     <el-space wrap>
@@ -15,7 +17,7 @@
       </el-button>
 
       <el-tag v-if="projectsStore.activeProject" type="info">
-        ID: {{ projectsStore.activeProject.id }} |
+        项目编号：{{ projectsStore.activeProject.id }} |
         {{ Number(projectsStore.activeProject.is_active || 0) === 1 ? '启用' : '停用' }}
       </el-tag>
       <el-text v-else type="info">未选择项目</el-text>
@@ -34,40 +36,41 @@
         <div v-for="it in projectsStore.issues" :key="it">{{ it }}</div>
       </template>
     </el-alert>
-   
-    <el-empty v-if="!hasProjects" description="暂无项目" />
-    <template v-else>
-      <ProjectConfigActions
-        :mode="mode"
-        :loading="loading"
-        :project="project"
-        :can-edit="canEdit"
-        @create="enterCreate"
-        @edit="enterEdit"
-        @save="save"
-        @cancel="cancel"
-        @toggle-active="toggleActive"
-        @delete="remove"
-      />
+ 
+    <ProjectConfigActions
+      :mode="mode"
+      :loading="loading"
+      :project="project"
+      :can-edit="canEdit"
+      @create="enterCreate"
+      @edit="enterEdit"
+      @save="save"
+      @cancel="cancel"
+      @toggle-active="toggleActive"
+      @delete="remove"
+    />
 
-      <el-alert v-if="error" type="error" :title="error" show-icon :closable="false" />
+    <el-alert v-if="error" type="error" :title="error" show-icon :closable="false" />
 
-      <template v-if="mode === 'view'">
+    <template v-if="mode === 'view'">
+      <el-empty v-if="!hasProjects" description="暂无项目，请点击「新建」创建项目" />
+      <template v-else>
         <ProjectBasicInfo :project="project" :loading="loading" />
         <ProjectBrandList :rows="brands" :loading="loading" />
         <ProjectPlatformList :rows="platforms" :loading="loading" />
         <ProjectKeywordList :rows="keywords" :loading="loading" />
       </template>
+    </template>
 
-      <template v-else>
-        <ProjectEditForm
-          ref="editFormRef"
-          :mode="mode"
-          :model="editModel"
-          :brand-options="brandOptions"
-          :platform-options="platformOptions"
-        />
-      </template>
+    <template v-else>
+      <ProjectEditForm
+        ref="editFormRef"
+        :mode="mode"
+        :model="editModel"
+        :brand-options="brandOptions"
+        :platform-options="platformOptions"
+        @refresh-meta="loadMetaOptions"
+      />
     </template>
   </el-space>
 </template>
@@ -126,12 +129,22 @@ async function load(projectId) {
     keywords.value = data.keywords
   } catch (e) {
     if (e?.name === 'AbortError') return
-    error.value = e?.message || String(e)
+    const msg = e?.message || String(e)
+    error.value = msg
     ElMessage.error(error.value)
     project.value = null
     brands.value = []
     platforms.value = []
     keywords.value = []
+
+    if (String(msg).includes('HTTP 404')) {
+      // Project might be deleted; refresh list to recover selection.
+      try {
+        await projectsStore.fetchProjects()
+      } catch {
+        // ignore secondary errors
+      }
+    }
   } finally {
     loading.value = false
   }

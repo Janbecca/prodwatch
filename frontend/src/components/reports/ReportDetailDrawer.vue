@@ -1,5 +1,7 @@
+<!-- 作用：前端组件：报告模块组件（ReportDetailDrawer）。 -->
+
 <template>
-  <el-drawer v-model="open" size="720px" title="Report Detail" :with-header="true">
+  <el-drawer v-model="open" size="720px" title="报告详情" :with-header="true">
     <el-alert
       v-if="store.detailError"
       type="error"
@@ -11,25 +13,25 @@
 
     <el-skeleton v-if="store.detailLoading" :rows="6" animated />
 
-    <el-empty v-else-if="!item" description="No detail" />
+    <el-empty v-else-if="!item" description="暂无详情" />
 
     <template v-else>
       <el-descriptions :column="1" border>
-        <el-descriptions-item label="Title">{{ item.title || '-' }}</el-descriptions-item>
-        <el-descriptions-item label="Type">
-          <el-tag size="small" type="info">{{ item.report_type || '-' }}</el-tag>
+        <el-descriptions-item label="标题">{{ item.title || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="类型">
+          <el-tag size="small" type="info">{{ typeText(item.report_type || '-') }}</el-tag>
         </el-descriptions-item>
-        <el-descriptions-item label="Project">{{ projectName }}</el-descriptions-item>
-        <el-descriptions-item label="Data Range">{{ fmtRange(item.data_start_date, item.data_end_date) }}</el-descriptions-item>
-        <el-descriptions-item label="Created At">{{ fmtTime(item.created_at) }}</el-descriptions-item>
-        <el-descriptions-item label="Status">
-          <el-tag :type="statusType(item.status)" size="small">{{ item.status || '-' }}</el-tag>
+        <el-descriptions-item label="项目">{{ projectName }}</el-descriptions-item>
+        <el-descriptions-item label="数据范围">{{ fmtRange(item.data_start_date, item.data_end_date) }}</el-descriptions-item>
+        <el-descriptions-item label="创建时间">{{ fmtTime(item.created_at) }}</el-descriptions-item>
+        <el-descriptions-item label="状态">
+          <el-tag :type="statusType(item.status)" size="small">{{ statusText(item.status) }}</el-tag>
         </el-descriptions-item>
-        <el-descriptions-item label="Summary">{{ item.summary || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="摘要">{{ item.summary || '-' }}</el-descriptions-item>
       </el-descriptions>
 
       <el-divider />
-      <el-text tag="b">Content (Markdown)</el-text>
+      <el-text tag="b">内容（标记文本）</el-text>
       <pre class="md">{{ item.content_markdown || '-' }}</pre>
     </template>
   </el-drawer>
@@ -71,6 +73,23 @@ function statusType(s) {
   if (s === 'pending' || s === 'running') return 'warning'
   return 'info'
 }
+
+function typeText(v) {
+  if (v === 'daily') return '日报'
+  if (v === 'weekly') return '周报'
+  if (v === 'monthly') return '月报'
+  if (v === 'special') return '专题'
+  return v || '-'
+}
+
+function statusText(v) {
+  if (v === 'pending') return '待处理'
+  if (v === 'running') return '生成中'
+  if (v === 'success' || v === 'done') return '成功'
+  if (v === 'failed') return '失败'
+  if (v === 'error') return '错误'
+  return v || '-'
+}
 </script>
 
 <style scoped>
@@ -86,4 +105,3 @@ function statusType(s) {
   word-break: break-word;
 }
 </style>
-

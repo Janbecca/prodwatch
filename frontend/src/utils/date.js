@@ -1,3 +1,5 @@
+// 作用：前端工具：date通用工具函数。
+
 function pad2(n) {
   return String(n).padStart(2, '0')
 }

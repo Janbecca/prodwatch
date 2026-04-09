@@ -1,9 +1,13 @@
+# 作用：后端服务层：报告生成相关业务逻辑封装。
+
 from __future__ import annotations
 
+import logging
 import sqlite3
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from backend.llm.router import get_llm_router
 from backend.report_chain_e import (
     fetch_agg_overview,
     fetch_candidate_posts,
@@ -18,6 +22,8 @@ from backend.report_chain_e import (
     set_report_status,
     update_report_content,
 )
+
+log = logging.getLogger("prodwatch.report_generation")
 
 
 @dataclass(frozen=True)
@@ -93,7 +99,18 @@ class ReportGenerationService:
             posts=posts,
         )
 
+        # 1) Generate stable skeleton via existing template (conservative, deterministic).
         summary, content_md = self._generate_markdown(gen_input)
+
+        # 2) Generate incremental LLM blocks (summary/strategy add-ons) and merge into skeleton.
+        try:
+            blocks = self._generate_llm_blocks(con, gen_input, cfg)
+            summary, content_md = self._merge_llm_blocks(summary, content_md, blocks)
+        except Exception:
+            # Never break report generation chain due to LLM issues.
+            blocks = None
+        if isinstance(blocks, dict) and any(str(blocks.get(k) or "").strip() for k in ["executive_summary_md", "strategy_suggestions_md"]):
+            log.info("report_generation ai_blocks_inserted report_id=%s", int(report_id))
 
         update_report_content(con, int(report_id), summary, content_md)
         # Evidence must come from real posts (post_raw) selected from `posts` query results.
@@ -172,6 +189,110 @@ class ReportGenerationService:
             competitor=input_.competitor,
             posts=input_.posts,
         )
+
+    def _generate_llm_blocks(self, con: sqlite3.Connection, input_: ReportGenerationInput, cfg: Any) -> dict[str, Any]:
+        """
+        Conservative LLM usage:
+        - Only generate incremental blocks (executive summary add-ons + strategy add-ons)
+        - Do not let LLM control the full markdown structure
+        """
+        report = input_.report
+        payload = {
+            "report": {
+                "id": int(report["id"]),
+                "project_id": int(report["project_id"]),
+                "title": str(report["title"] or ""),
+                "report_type": str(report["report_type"] or ""),
+                "data_start_date": str(report["data_start_date"] or ""),
+                "data_end_date": str(report["data_end_date"] or ""),
+            },
+            "config": {
+                "include_sentiment": int(getattr(cfg, "include_sentiment", 0)),
+                "include_trend": int(getattr(cfg, "include_trend", 0)),
+                "include_topics": int(getattr(cfg, "include_topics", 0)),
+                "include_feature_analysis": int(getattr(cfg, "include_feature_analysis", 0)),
+                "include_spam": int(getattr(cfg, "include_spam", 0)),
+                "include_competitor_compare": int(getattr(cfg, "include_competitor_compare", 0)),
+                "include_strategy": int(getattr(cfg, "include_strategy", 0)),
+            },
+            "overview": input_.overview or {},
+            "trend": (input_.trend or [])[:14],
+            "top_keywords": (input_.top_keywords or [])[:12],
+            "top_features": (input_.top_features or [])[:12],
+            "competitor": (input_.competitor or [])[:12],
+            "post_excerpts": self._post_excerpts(input_.posts or {}, limit_each=3, max_chars=220),
+        }
+
+        res = get_llm_router().run(task_type="report_generation", input=payload, con=con)
+        log.info(
+            "report_generation llm_blocks task_type=report_generation provider=%s model=%s ok=%s",
+            getattr(res, "provider", None),
+            getattr(res, "model", None),
+            bool(getattr(res, "ok", False)),
+        )
+        out = res.output if isinstance(res.output, dict) else {}
+        if not out:
+            return {}
+        return out
+
+    def _post_excerpts(self, posts: dict[str, list[sqlite3.Row]], *, limit_each: int, max_chars: int) -> dict[str, list[dict[str, Any]]]:
+        out: dict[str, list[dict[str, Any]]] = {}
+        for k, rows in (posts or {}).items():
+            items: list[dict[str, Any]] = []
+            for r in (rows or [])[: int(limit_each)]:
+                try:
+                    content = str(r["content"] or "").strip().replace("\n", " ")
+                except Exception:
+                    content = ""
+                if len(content) > int(max_chars):
+                    content = content[: int(max_chars)] + "..."
+                items.append(
+                    {
+                        "post_id": int(r["post_id"]) if "post_id" in r.keys() else None,
+                        "platform_id": int(r["platform_id"]) if "platform_id" in r.keys() and r["platform_id"] is not None else None,
+                        "sentiment": str(r["sentiment"] or "") if "sentiment" in r.keys() else "",
+                        "like_count": int(r["like_count"] or 0) if "like_count" in r.keys() else 0,
+                        "title": str(r["title"] or "") if "title" in r.keys() else "",
+                        "content_excerpt": content,
+                    }
+                )
+            out[str(k)] = items
+        return out
+
+    def _merge_llm_blocks(self, summary: str, content_md: str, blocks: dict[str, Any]) -> tuple[str, str]:
+        if not isinstance(blocks, dict):
+            return summary, content_md
+
+        new_summary = str(blocks.get("summary") or "").strip()
+        exec_md = str(blocks.get("executive_summary_md") or "").strip()
+        strat_md = str(blocks.get("strategy_suggestions_md") or "").strip()
+
+        merged_summary = new_summary or summary
+        merged_md = str(content_md or "")
+
+        if exec_md:
+            merged_md = self._insert_under_heading(merged_md, "## Executive Summary", "### AI Additions", exec_md)
+        if strat_md:
+            merged_md = self._insert_under_heading(merged_md, "## Strategy Suggestions", "### AI Additions", strat_md)
+
+        return merged_summary, merged_md
+
+    def _insert_under_heading(self, md: str, heading: str, subheading: str, block_md: str) -> str:
+        """
+        Insert a markdown block right after a known heading (best-effort).
+        If heading is not found, append to the end.
+        """
+        text = str(md or "")
+        h = str(heading)
+        idx = text.find(h)
+        block = "\n".join(["", subheading, block_md, ""])
+        if idx < 0:
+            return text.rstrip() + block + "\n"
+        # insert after heading line
+        end = text.find("\n", idx)
+        if end < 0:
+            return text.rstrip() + block + "\n"
+        return text[: end + 1] + block + text[end + 1 :]
 
 
 _default_service: Optional[ReportGenerationService] = None

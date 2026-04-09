@@ -1,3 +1,5 @@
+// 作用：前端 API：项目配置变更相关后端接口调用封装。
+
 async function sendJSON(path, method, body, options = {}) {
   const API_BASE = import.meta.env.VITE_API_BASE || ''
   const res = await fetch(`${API_BASE}${path}`, {

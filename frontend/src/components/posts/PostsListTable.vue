@@ -1,5 +1,7 @@
+<!-- 作用：前端组件：帖子模块组件（PostsListTable）。 -->
+
 <template>
-  <PageSection title="Posts">
+  <PageSection title="帖子列表">
     <el-alert
       v-if="store.listError"
       type="error"
@@ -16,8 +18,8 @@
       style="width: 100%"
       @row-click="onRowClick"
     >
-      <el-table-column prop="id" label="ID" width="90" />
-      <el-table-column label="Summary" min-width="320">
+      <el-table-column prop="id" label="编号" width="90" />
+      <el-table-column label="摘要" min-width="320">
         <template #default="{ row }">
           <div class="summary">
             <div class="summary__title" v-if="row.title">{{ row.title }}</div>
@@ -25,36 +27,36 @@
           </div>
         </template>
       </el-table-column>
-      <el-table-column prop="platformName" label="Platform" width="110" />
-      <el-table-column prop="brandName" label="Brand" width="140" />
-      <el-table-column prop="publishTime" label="Publish Time" width="150" />
-      <el-table-column label="Keywords" min-width="200">
+      <el-table-column prop="platformName" label="平台" width="110" />
+      <el-table-column prop="brandName" label="品牌" width="140" />
+      <el-table-column prop="publishTime" label="发布时间" width="150" />
+      <el-table-column label="关键词" min-width="200">
         <template #default="{ row }">
           <el-space wrap>
             <el-tag v-for="k in row.keywords" :key="k" size="small">{{ k }}</el-tag>
           </el-space>
         </template>
       </el-table-column>
-      <el-table-column prop="likeCount" label="Likes" width="90" />
-      <el-table-column prop="commentCount" label="Comments" width="100" />
-      <el-table-column prop="shareCount" label="Shares" width="90" />
-      <el-table-column prop="viewCount" label="Views" width="90" />
-      <el-table-column label="Sentiment" width="120">
+      <el-table-column prop="likeCount" label="点赞" width="90" />
+      <el-table-column prop="commentCount" label="评论" width="100" />
+      <el-table-column prop="shareCount" label="分享" width="90" />
+      <el-table-column prop="viewCount" label="浏览" width="90" />
+      <el-table-column label="情感" width="120">
         <template #default="{ row }">
-          <el-tag :type="sentimentType(row.sentiment)" size="small">{{ row.sentiment || '-' }}</el-tag>
+          <el-tag :type="sentimentType(row.sentiment)" size="small">{{ sentimentText(row.sentiment) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="sentimentScore" label="Score" width="90" />
-      <el-table-column prop="emotionIntensity" label="Intensity" width="110" />
-      <el-table-column label="Spam" width="90">
+      <el-table-column prop="sentimentScore" label="分数" width="90" />
+      <el-table-column prop="emotionIntensity" label="强度" width="110" />
+      <el-table-column label="垃圾" width="90">
         <template #default="{ row }">
-          <el-tag :type="row.spamLabel === 'spam' ? 'danger' : 'info'" size="small">{{ row.spamLabel || '-' }}</el-tag>
+          <el-tag :type="row.spamLabel === 'spam' ? 'danger' : 'info'" size="small">{{ spamText(row.spamLabel) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="Valid" width="90">
+      <el-table-column label="有效" width="90">
         <template #default="{ row }">
           <el-tag :type="row.isValid === 1 ? 'success' : row.isValid === 0 ? 'warning' : 'info'" size="small">
-            {{ row.isValid === 1 ? 'valid' : row.isValid === 0 ? 'invalid' : '-' }}
+            {{ row.isValid === 1 ? '有效' : row.isValid === 0 ? '无效' : '-' }}
           </el-tag>
         </template>
       </el-table-column>
@@ -102,6 +104,20 @@ function sentimentType(s) {
   if (s === 'negative') return 'danger'
   if (s === 'neutral') return 'info'
   return 'info'
+}
+
+function sentimentText(s) {
+  if (s === 'positive') return '正向'
+  if (s === 'neutral') return '中性'
+  if (s === 'negative') return '负向'
+  return s || '-'
+}
+
+function spamText(s) {
+  const v = String(s || 'normal').toLowerCase()
+  if (v === 'spam') return '垃圾'
+  if (v === 'normal') return '正常'
+  return s || '-'
 }
 
 const brandNameById = computed(() => {

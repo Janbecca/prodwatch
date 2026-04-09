@@ -1,5 +1,7 @@
+<!-- 作用：前端组件：仪表盘模块组件（DashboardOverviewCards）。 -->
+
 <template>
-  <PageSection title="Data Overview">
+  <PageSection title="数据概览">
     <el-alert
       v-if="error"
       type="error"
@@ -12,8 +14,8 @@
     <el-skeleton v-if="loading" :rows="3" animated />
 
     <template v-else>
-      <el-empty v-if="!hasFilters" description="Select at least 1 brand and 1 platform" />
-      <el-empty v-else-if="!hasData" description="No data" />
+      <el-empty v-if="!hasFilters" description="至少选择 1 个品牌和 1 个平台" />
+      <el-empty v-else-if="!hasData" description="暂无数据" />
 
       <template v-else>
         <!-- Single brand: card layout -->
@@ -30,10 +32,10 @@
 
         <!-- Multi brand: list compare -->
         <el-table v-else :data="tableRows" border>
-          <el-table-column prop="brandName" label="Brand" min-width="160" />
-          <el-table-column prop="totalPostCount" label="Posts" min-width="120" />
-          <el-table-column prop="positiveRatioText" label="Positive %" min-width="120" />
-          <el-table-column prop="negativeRatioText" label="Negative %" min-width="120" />
+          <el-table-column prop="brandName" label="品牌" min-width="160" />
+          <el-table-column prop="totalPostCount" label="帖子数" min-width="120" />
+          <el-table-column prop="positiveRatioText" label="正向 %" min-width="120" />
+          <el-table-column prop="negativeRatioText" label="负向 %" min-width="120" />
         </el-table>
       </template>
     </template>
@@ -61,7 +63,7 @@ const brandNameById = computed(() => {
   for (const b of dashboard.brandOptions || []) {
     const id = Number(b?.id)
     if (!Number.isFinite(id)) continue
-    map[id] = b?.name ?? `Brand ${id}`
+    map[id] = b?.name ?? `品牌 ${id}`
   }
   return map
 })
@@ -101,15 +103,15 @@ const singleCards = computed(() => {
   const row = singleRow.value
   if (!row) return []
   const bid = Number(row?.brand_id)
-  const name = brandNameById.value[bid] || `Brand ${bid}`
+  const name = brandNameById.value[bid] || `品牌 ${bid}`
   const total = Number(row?.total_post_count || 0)
   const pos = Number(row?.positive_count || 0)
   const neg = Number(row?.negative_count || 0)
   return [
-    { key: 'brand', label: 'Brand', value: name },
-    { key: 'posts', label: 'Posts', value: total.toLocaleString() },
-    { key: 'pos', label: 'Positive %', value: pct(ratio(pos, total)) },
-    { key: 'neg', label: 'Negative %', value: pct(ratio(neg, total)) },
+    { key: 'brand', label: '品牌', value: name },
+    { key: 'posts', label: '帖子数', value: total.toLocaleString() },
+    { key: 'pos', label: '正向 %', value: pct(ratio(pos, total)) },
+    { key: 'neg', label: '负向 %', value: pct(ratio(neg, total)) },
   ]
 })
 
@@ -121,7 +123,7 @@ const tableRows = computed(() => {
     const neg = Number(row?.negative_count || 0)
     return {
       brandId: bid,
-      brandName: brandNameById.value[bid] || `Brand ${bid}`,
+      brandName: brandNameById.value[bid] || `品牌 ${bid}`,
       totalPostCount: total.toLocaleString(),
       positiveRatioText: pct(ratio(pos, total)),
       negativeRatioText: pct(ratio(neg, total)),
@@ -149,7 +151,7 @@ async function load() {
   const dr = resolveDateRange(dashboard.timeQuery)
   if (!dr) {
     items.value = []
-    error.value = 'Invalid date range (select a custom range, or use last 7/14/30 days).'
+    error.value = '日期范围无效（请选择自定义范围，或使用最近 7/14/30 天）。'
     loading.value = false
     return
   }

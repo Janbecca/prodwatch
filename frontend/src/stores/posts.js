@@ -1,3 +1,5 @@
+// 作用：前端状态：帖子相关状态管理（store）。
+
 import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
 
@@ -134,7 +136,12 @@ export const usePostsStore = defineStore('posts', () => {
       const data = await fetchProjectConfig(pid)
       brandOptions.value = Array.isArray(data?.brands) ? data.brands : []
       platformOptions.value = Array.isArray(data?.platforms) ? data.platforms : []
-      keywordOptions.value = Array.isArray(data?.keywords) ? data.keywords : []
+      // API returns keywords as rows [{keyword, keyword_type, ...}], but UI <el-option> needs string label/value.
+      keywordOptions.value = Array.isArray(data?.keywords)
+        ? data.keywords
+            .map((k) => String(k?.keyword || '').trim())
+            .filter((s) => s !== '')
+        : []
 
       draft.value = defaultDraftForScope({
         brands: brandOptions.value,

@@ -1,3 +1,5 @@
+# 作用：后端链路：数据刷新/抓取链路编排（链路 B）。
+
 from __future__ import annotations
 
 import argparse

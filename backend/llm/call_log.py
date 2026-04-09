@@ -1,3 +1,5 @@
+# 作用：LLM：调用日志记录与持久化字段定义。
+
 from __future__ import annotations
 
 import json

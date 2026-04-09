@@ -1,3 +1,5 @@
+// 作用：前端状态：报告相关状态管理（store）。
+
 import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -54,6 +56,7 @@ export const useReportsStore = defineStore('reports', () => {
   // Create drawer state (for "copy generate")
   const createOpen = ref(false)
   const createPrefill = ref(null)
+  const creating = ref(false)
 
   // Detail drawer state
   const detailOpen = ref(false)
@@ -187,7 +190,7 @@ export const useReportsStore = defineStore('reports', () => {
   }
 
   async function onExport(row) {
-    ElMessage.info(`Export not implemented (report_id=${row?.id ?? '-'})`)
+    ElMessage.info(`导出暂未实现（report_id=${row?.id ?? '-'}）`)
   }
 
   async function onEvidence(row) {
@@ -206,13 +209,13 @@ export const useReportsStore = defineStore('reports', () => {
     try {
       const res = await fetchReportDetail(reportId)
       const it = res?.item || null
-      if (!it) throw new Error('report detail missing')
+      if (!it) throw new Error('报告详情缺失')
 
       // Prefer parsing config from report_config when present.
       const cfg = it.config || {}
       createPrefill.value = {
         projectId: Number(it.project_id) || null,
-        title: `${it.title || 'Report'} (copy)`,
+        title: `${it.title || `报告`}（复制）`,
         type: it.report_type || 'daily',
         dateRange: [it.data_start_date, it.data_end_date].filter(Boolean),
         platformIds: uniqNums(splitCsv(cfg.platform_ids)),
@@ -242,7 +245,7 @@ export const useReportsStore = defineStore('reports', () => {
     detailLoading.value = true
     try {
       await generateReport(reportId)
-      ElMessage.success(`Generated report #${reportId}`)
+      ElMessage.success(`已生成报告 #${reportId}`)
       if (queried.value) await fetchList()
       // If detail drawer is showing this report, refresh it.
       if (detailOpen.value && Number(detail.value?.id) === reportId) {
@@ -257,14 +260,29 @@ export const useReportsStore = defineStore('reports', () => {
   }
 
   async function submitCreate(payload) {
-    const res = await createReport(payload)
-    const rid = Number(res?.report_id)
-    if (!Number.isFinite(rid) || rid <= 0) throw new Error('create failed')
-    ElMessage.success(`Created report #${rid}`)
-    createOpen.value = false
-    createPrefill.value = null
-    if (queried.value) await fetchList()
-    return rid
+    if (creating.value) return null
+    creating.value = true
+    try {
+      const res = await createReport(payload)
+      const rid = Number(res?.report_id)
+      if (!Number.isFinite(rid) || rid <= 0) throw new Error('创建失败')
+
+      const status = String(res?.status || '')
+      if (status === 'failed') {
+        ElMessage.error(`报告已创建但生成失败（#${rid}）`)
+      } else if (status === 'success' || status === 'done') {
+        ElMessage.success(`已创建并生成报告 #${rid}`)
+      } else {
+        ElMessage.success(`已创建报告 #${rid}`)
+      }
+
+      createOpen.value = false
+      createPrefill.value = null
+      if (queried.value) await fetchList()
+      return rid
+    } finally {
+      creating.value = false
+    }
   }
 
   async function fetchEvidence() {
@@ -318,10 +336,10 @@ export const useReportsStore = defineStore('reports', () => {
   async function onDelete(row) {
     const reportId = Number(row?.id)
     if (!Number.isFinite(reportId) || reportId <= 0) return
-    await ElMessageBox.confirm(`Delete report #${reportId}?`, 'Confirm', { type: 'warning' })
+    await ElMessageBox.confirm(`确认删除报告 #${reportId}？`, '确认', { type: 'warning' })
     try {
       await deleteReport(reportId)
-      ElMessage.success('Deleted')
+      ElMessage.success('已删除')
       await fetchList()
       if (items.value.length === 0 && page.value > 1) {
         page.value -= 1
@@ -395,6 +413,7 @@ export const useReportsStore = defineStore('reports', () => {
     // create drawer
     createOpen,
     createPrefill,
+    creating,
 
     // evidence
     evidenceOpen,

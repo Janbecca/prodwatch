@@ -1,3 +1,5 @@
+# 作用：LLM：根据配置构建/选择模型提供方实例。
+
 from __future__ import annotations
 
 from typing import Optional

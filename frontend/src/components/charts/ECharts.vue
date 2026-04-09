@@ -1,3 +1,5 @@
+<!-- 作用：前端组件：图表模块组件（ECharts）。 -->
+
 <template>
   <div ref="el" class="ec" />
 </template>

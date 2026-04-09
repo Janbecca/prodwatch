@@ -1,3 +1,5 @@
+// 作用：前端 API：项目配置相关后端接口调用封装。
+
 import { getJSON } from './http'
 
 export async function fetchProjectConfig(projectId, options = {}) {

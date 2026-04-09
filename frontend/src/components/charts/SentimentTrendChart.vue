@@ -1,3 +1,5 @@
+<!-- 作用：前端组件：图表模块组件（SentimentTrendChart）。 -->
+
 <template>
   <ECharts :option="option" :height="height" />
 </template>
@@ -24,11 +26,11 @@ function ratio(num, den) {
 const option = computed(() => {
   const isPos = String(props.mode) !== 'negative'
   const key = isPos ? 'positive_count' : 'negative_count'
-  const title = isPos ? 'Positive share' : 'Negative share'
+  const title = isPos ? '正向占比' : '负向占比'
 
   const lines = (props.series || []).map((s) => {
     const bid = Number(s?.brand_id)
-    const name = props.brandNameById?.[bid] || `Brand ${bid}`
+    const name = props.brandNameById?.[bid] || `品牌 ${bid}`
     const totals = Array.isArray(s?.total_post_count) ? s.total_post_count : []
     const counts = Array.isArray(s?.[key]) ? s[key] : []
     const data = (props.dates || []).map((_, i) => ratio(counts[i], totals[i]))
@@ -63,4 +65,3 @@ const option = computed(() => {
   }
 })
 </script>
-

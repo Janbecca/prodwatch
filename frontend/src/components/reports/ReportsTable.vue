@@ -1,5 +1,7 @@
+<!-- 作用：前端组件：报告模块组件（ReportsTable）。 -->
+
 <template>
-  <PageSection title="Reports">
+  <PageSection title="报告列表">
     <el-alert
       v-if="store.error"
       type="error"
@@ -9,7 +11,7 @@
       style="margin-bottom: 10px"
     />
 
-    <el-empty v-if="!store.queried && !store.loading" description="Click Query to load reports" />
+    <el-empty v-if="!store.queried && !store.loading" description="点击“查询”加载报告列表" />
 
     <el-table
       v-else
@@ -19,31 +21,31 @@
       style="width: 100%"
       @row-dblclick="(row) => store.openDetail(row.raw)"
     >
-      <el-table-column prop="title" label="Title" min-width="240" show-overflow-tooltip />
-      <el-table-column prop="type" label="Type" width="110">
+      <el-table-column prop="title" label="标题" min-width="240" show-overflow-tooltip />
+      <el-table-column prop="type" label="类型" width="110">
         <template #default="{ row }">
           <el-tag size="small" type="info">{{ row.type }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="projectName" label="Project" width="160" show-overflow-tooltip />
-      <el-table-column prop="dataRange" label="Data Range" width="210" />
-      <el-table-column prop="createdAt" label="Created At" width="170" />
-      <el-table-column prop="summary" label="Summary" min-width="220" show-overflow-tooltip />
-      <el-table-column prop="status" label="Status" width="120">
+      <el-table-column prop="projectName" label="项目" width="160" show-overflow-tooltip />
+      <el-table-column prop="dataRange" label="数据范围" width="210" />
+      <el-table-column prop="createdAt" label="创建时间" width="170" />
+      <el-table-column prop="summary" label="摘要" min-width="220" show-overflow-tooltip />
+      <el-table-column prop="status" label="状态" width="120">
         <template #default="{ row }">
-          <el-tag :type="statusType(row.status)" size="small">{{ row.status || '-' }}</el-tag>
+          <el-tag :type="statusType(row.status)" size="small">{{ row.statusLabel }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="Actions" width="440" fixed="right">
+      <el-table-column label="操作" width="440" fixed="right">
         <template #default="{ row }">
-          <el-button size="small" type="primary" plain @click="goDetail(row.raw)">Detail</el-button>
+          <el-button size="small" type="primary" plain @click="goDetail(row.raw)">详情</el-button>
           <el-button size="small" type="success" plain :disabled="row.status === 'running'" @click="store.onGenerate(row.raw)">
-            Generate
+            生成
           </el-button>
-          <el-button size="small" plain @click="store.onEvidence(row.raw)">Evidence</el-button>
-          <el-button size="small" plain @click="store.onExport(row.raw)">Export</el-button>
-          <el-button size="small" type="success" plain @click="store.onCopyGenerate(row.raw)">Copy</el-button>
-          <el-button size="small" type="danger" plain @click="store.onDelete(row.raw)">Delete</el-button>
+          <el-button size="small" plain @click="store.onEvidence(row.raw)">证据</el-button>
+          <el-button size="small" plain @click="store.onExport(row.raw)">导出</el-button>
+          <el-button size="small" type="success" plain @click="store.onCopyGenerate(row.raw)">复制</el-button>
+          <el-button size="small" type="danger" plain @click="store.onDelete(row.raw)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -95,19 +97,39 @@ const rows = computed(() => {
   const nameById = store.projectNameById || {}
   return (store.items || []).map((it) => {
     const pid = Number(it?.project_id)
+    const typeRaw = it?.report_type || '-'
+    const statusRaw = it?.status
     return {
       raw: it,
       id: Number(it?.id),
-      title: trimText(it?.title) || `Report #${it?.id ?? '-'}`,
-      type: it?.report_type || '-',
+      title: trimText(it?.title) || `报告 #${it?.id ?? '-'}`,
+      type: typeText(typeRaw),
       projectName: nameById[pid] || `#${pid || '-'}`,
       dataRange: fmtRange(it?.data_start_date, it?.data_end_date),
       createdAt: fmtTime(it?.created_at),
       summary: truncate(it?.summary || it?.content_markdown || ''),
-      status: it?.status,
+      status: statusRaw,
+      statusLabel: statusText(statusRaw),
     }
   })
 })
+
+function typeText(v) {
+  if (v === 'daily') return '日报'
+  if (v === 'weekly') return '周报'
+  if (v === 'monthly') return '月报'
+  if (v === 'special') return '专题'
+  return v || '-'
+}
+
+function statusText(v) {
+  if (v === 'pending') return '待处理'
+  if (v === 'running') return '生成中'
+  if (v === 'success' || v === 'done') return '成功'
+  if (v === 'failed') return '失败'
+  if (v === 'error') return '错误'
+  return v || '-'
+}
 
 function goDetail(raw) {
   const id = Number(raw?.id)

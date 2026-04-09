@@ -1,3 +1,5 @@
+// 作用：前端状态：项目相关状态管理（store）。
+
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { fetchEnabledProjects } from '../api/projects'

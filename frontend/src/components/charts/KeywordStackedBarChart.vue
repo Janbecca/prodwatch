@@ -1,3 +1,5 @@
+<!-- 作用：前端组件：图表模块组件（KeywordStackedBarChart）。 -->
+
 <template>
   <ECharts :option="option" :height="height" />
 </template>

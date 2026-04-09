@@ -1,3 +1,5 @@
+// 作用：前端 API：项目相关后端接口调用封装。
+
 import { getJSON } from './http'
 
 // Use /list to make newly created inactive projects visible in the UI.

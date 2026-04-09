@@ -1,3 +1,5 @@
+# 作用：后端服务层：分析相关业务逻辑封装。
+
 from __future__ import annotations
 
 from dataclasses import dataclass

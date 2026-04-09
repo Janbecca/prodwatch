@@ -1,3 +1,5 @@
+# 作用：后端 API：FastAPI 应用入口，注册路由与中间件。
+
 from __future__ import annotations
 
 from fastapi import FastAPI

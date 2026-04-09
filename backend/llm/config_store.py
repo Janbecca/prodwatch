@@ -1,3 +1,5 @@
+# 作用：LLM：配置读取/存储与运行时开关管理。
+
 from __future__ import annotations
 
 import json
@@ -9,7 +11,7 @@ from typing import Any, Optional
 from backend.llm.types import LLMTaskConfig
 from backend.llm.file_task_config import get_llm_config_path, load_llm_tasks_from_file
 
-
+# 系统支持的任务类型枚举
 DEFAULT_TASKS = [
     "crawler_generation",
     "sentiment_analysis",
@@ -19,11 +21,11 @@ DEFAULT_TASKS = [
     "report_generation",
 ]
 
-
+# 默认配置：所有任务默认使用 Mock 提供者和模型，确保系统在没有外部配置时仍能正常运行。
 def default_config(task_type: str) -> LLMTaskConfig:
     return LLMTaskConfig(task_type=str(task_type), provider="mock", model="mock-v1", fallback_provider="mock", fallback_model="mock-v1")
 
-
+# 从环境变量读取 JSON 配置，支持覆盖默认配置。环境变量格式示例：
 def _env_json_config() -> dict[str, Any]:
     raw = os.environ.get("PRODWATCH_LLM_TASK_CONFIG_JSON") or ""
     raw = raw.strip()
@@ -104,7 +106,7 @@ class LLMConfigStore:
             )
 
         return default_config(task)
-
+    
     def upsert(self, con: sqlite3.Connection, cfg: LLMTaskConfig) -> None:
         con.execute(
             """

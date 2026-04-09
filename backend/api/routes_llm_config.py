@@ -1,3 +1,5 @@
+# 作用：后端 API：LLM 配置相关路由与接口实现。
+
 from __future__ import annotations
 
 import sqlite3
@@ -6,7 +8,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from backend.api.db import get_db
+from backend.api.db import get_db_relaxed
 from backend.llm.config_store import get_llm_config_store
 from backend.llm.provider_factory import get_provider_factory
 from backend.llm.types import LLMTaskConfig
@@ -16,9 +18,9 @@ router = APIRouter(prefix="/api/llm", tags=["llm"])
 
 
 TASKS = [
-    {"task_type": "crawler_generation", "title": "Crawler Generation"},
-    {"task_type": "post_analysis", "title": "Post Analysis"},
-    {"task_type": "report_generation", "title": "Report Generation"},
+    {"task_type": "crawler_generation", "title": "帖子生成（模拟爬虫）"},
+    {"task_type": "post_analysis", "title": "帖子分析"},
+    {"task_type": "report_generation", "title": "报告生成"},
 ]
 
 
@@ -45,16 +47,15 @@ def _ensure_llm_task_config_table(con: sqlite3.Connection) -> None:
     )
 
 
+# 作用：LLM：模型提供方实现（OpenAI 兼容协议客户端封装）。
 def _models_by_provider() -> dict[str, list[str]]:
     """
-    Model dropdown source for the UI.
-
-    Keep small + conservative. Actual runtime defaults can still be overridden by env vars in providers.
+    用于前端的模型下拉列表数据源。
+    实际运行时的默认值仍可通过各提供商（Provider）中的环境变量进行覆盖。
     """
     return {
         "mock": ["mock-v1"],
         "deepseek": ["deepseek-chat", "deepseek-reasoner"],
-        # DashScope OpenAI-compat common names
         "qwen": ["qwen-turbo", "qwen-plus", "qwen-max"],
     }
 
@@ -135,7 +136,7 @@ def get_models() -> dict[str, Any]:
 
 
 @router.get("/config")
-def get_config(db: sqlite3.Connection = Depends(get_db)) -> dict[str, Any]:
+def get_config(db: sqlite3.Connection = Depends(get_db_relaxed)) -> dict[str, Any]:
     factory = get_provider_factory()
     providers = factory.list_provider_names()
     m = _models_by_provider()
@@ -153,7 +154,7 @@ def get_config(db: sqlite3.Connection = Depends(get_db)) -> dict[str, Any]:
 
 
 @router.put("/config")
-def put_config(payload: PutLLMConfigRequest, db: sqlite3.Connection = Depends(get_db)) -> dict[str, Any]:
+def put_config(payload: PutLLMConfigRequest, db: sqlite3.Connection = Depends(get_db_relaxed)) -> dict[str, Any]:
     _ensure_llm_task_config_table(db)
     db.commit()
 
@@ -179,13 +180,8 @@ def put_config(payload: PutLLMConfigRequest, db: sqlite3.Connection = Depends(ge
         fb_model = (str(item.fallback_model).strip() if item.fallback_model is not None else "")
         fb_model = None if fb_model == "" else fb_model
 
-        # Optional guard: if the provider has a known model list, validate membership.
-        known_models = set(models_by_provider.get(provider) or [])
-        if known_models and model is not None and model not in known_models:
-            raise HTTPException(status_code=400, detail=f"unknown model for provider={provider}: {model}")
-        known_fb_models = set(models_by_provider.get(fb_provider) or [])
-        if known_fb_models and fb_model is not None and fb_model not in known_fb_models:
-            raise HTTPException(status_code=400, detail=f"unknown fallback_model for provider={fb_provider}: {fb_model}")
+        # Do not hard-fail on model names: the UI has a conservative dropdown list,
+        # but real providers may support more models and users may type custom names.
 
         store.upsert(
             db,

@@ -1,3 +1,5 @@
+# 作用：后端 API：项目相关路由与接口实现。
+
 from __future__ import annotations
 
 import sqlite3

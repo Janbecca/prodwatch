@@ -1,3 +1,5 @@
+// 作用：前端 API：仪表盘相关后端接口调用封装。
+
 import { getJSON } from './http'
 
 function appendList(params, key, values) {

@@ -1,3 +1,5 @@
+# 作用：LLM：模型提供方实现（OpenAI 兼容协议客户端封装）。
+    
 from __future__ import annotations
 
 import json

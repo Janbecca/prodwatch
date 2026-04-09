@@ -1,3 +1,5 @@
+# 作用：后端主流程：串联抓取→过滤→分析→报告生成等流水线。
+
 from __future__ import annotations
 
 import argparse
@@ -82,7 +84,7 @@ def parse_stat_date(value: Optional[str]) -> str:
 
 
 def connect(db_path: str) -> sqlite3.Connection:
-    con = sqlite3.connect(db_path)
+    con = sqlite3.connect(db_path, check_same_thread=False)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys = ON;")
     con.execute("PRAGMA journal_mode = WAL;")
@@ -477,6 +479,9 @@ def build_post_candidates(
     stat_date: str,
     posts_per_target: int,
 ) -> list[PostCandidate]:
+    # Local import to keep pipeline_main's global surface stable (minimal refactor boundary).
+    from backend.services.crawler_generation_service import CrawlContext, get_crawler_generation_service
+
     platform_map = {
         int(r["id"]): (str(r["code"]), str(r["name"]))
         for r in con.execute("SELECT id, code, name FROM platform;").fetchall()
@@ -489,10 +494,49 @@ def build_post_candidates(
     base_date = datetime.strptime(stat_date, "%Y-%m-%d")
 
     candidates: list[PostCandidate] = []
+    svc = get_crawler_generation_service()
     for t in targets:
         mark_crawl_job_target_status(con, t.id, "running")
         platform_code, _ = platform_map.get(t.platform_id, (f"p{t.platform_id}", ""))
         brand_name = brand_map.get(t.brand_id, f"b{t.brand_id}")
+        ctx = CrawlContext(
+            project_id=int(project_id),
+            crawl_job_id=int(crawl_job_id),
+            stat_date=str(stat_date),
+            posts_per_target=int(posts_per_target),
+            platform_id=int(t.platform_id),
+            brand_id=int(t.brand_id),
+            keyword=str(t.keyword),
+            target_id=int(t.id),
+            platform_code=str(platform_code),
+            brand_name=str(brand_name),
+        )
+        posts = svc.generate_posts(ctx, con=con)
+        for p in posts:
+            candidates.append(
+                PostCandidate(
+                    project_id=int(p["project_id"]),
+                    crawl_job_id=int(p["crawl_job_id"]),
+                    platform_id=int(p["platform_id"]),
+                    brand_id=int(p["brand_id"]),
+                    external_post_id=str(p["external_post_id"]),
+                    author_name=str(p["author_name"]),
+                    title=str(p["title"]),
+                    content=str(p["content"]),
+                    post_url=str(p["post_url"]),
+                    publish_time=str(p["publish_time"]),
+                    crawled_at=str(p["crawled_at"]),
+                    like_count=int(p["like_count"]),
+                    comment_count=int(p["comment_count"]),
+                    share_count=int(p["share_count"]),
+                    view_count=int(p["view_count"]),
+                    raw_payload=str(p["raw_payload"]),
+                    dedup_key=str(p["dedup_key"]),
+                    created_at=str(p["created_at"]),
+                )
+            )
+        mark_crawl_job_target_status(con, t.id, "success")
+        continue
         for i in range(posts_per_target):
             publish_dt = base_date + timedelta(minutes=7 * i + (t.id % 5))
             publish_time = publish_dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -743,6 +787,10 @@ def insert_feature_results(
 
 
 def run_analysis(con: sqlite3.Connection, project_id: int, post_ids: list[int]) -> None:
+    # Local import to avoid widening pipeline_main module-level responsibilities.
+    import logging
+
+    log = logging.getLogger("prodwatch.pipeline")
     keyword_rows = con.execute(
         """
         SELECT keyword, keyword_type, weight, is_enabled
@@ -763,17 +811,33 @@ def run_analysis(con: sqlite3.Connection, project_id: int, post_ids: list[int]) 
         if (r["keyword"] or "").strip() != ""
     ]
     analyzer = PostAnalysisAnalyzerService.for_project(project_keywords, con=con)
+    rule = MockRuleAnalyzerService.for_project(project_keywords)
+    failed = 0
+    samples: list[str] = []
 
     for post_id in post_ids:
-        row = con.execute(
-            "SELECT id, project_id, platform_id, brand_id, title, content FROM post_raw WHERE id=?;",
-            (post_id,),
-        ).fetchone()
+        row = None
+        try:
+            row = con.execute(
+                "SELECT id, project_id, platform_id, brand_id, title, content FROM post_raw WHERE id=?;",
+                (post_id,),
+            ).fetchone()
+        except Exception as e:
+            failed += 1
+            if len(samples) < 5:
+                samples.append(f"{post_id}:fetch:{e}")
+            continue
         if not row:
             continue
-        brand_id = row["brand_id"]
-        if brand_id is not None:
-            ensure_post_brand_relation(con, int(row["id"]), int(brand_id))
+
+        try:
+            brand_id = row["brand_id"]
+            if brand_id is not None:
+                ensure_post_brand_relation(con, int(row["id"]), int(brand_id))
+        except Exception:
+            # Best-effort only; do not break analysis chain.
+            pass
+
         post = PostInput(
             post_id=int(row["id"]),
             project_id=int(row["project_id"]),
@@ -783,17 +847,68 @@ def run_analysis(con: sqlite3.Connection, project_id: int, post_ids: list[int]) 
             content=str(row["content"] or ""),
         )
 
-        clean = analyzer.clean_post(post)
-        sentiment = analyzer.analyze_sentiment(post)
-        spam = analyzer.detect_spam(post)
-        kw_hits = analyzer.extract_keywords(post, project_keywords)
-        feat_hits = analyzer.extract_features(post)
+        # Clean (best-effort)
+        try:
+            clean = analyzer.clean_post(post)
+        except Exception:
+            clean = rule.clean_post(post)
+        try:
+            insert_clean_result(con, post_id, clean)
+        except Exception:
+            failed += 1
+            if len(samples) < 5:
+                samples.append(f"{post_id}:clean_write")
 
-        insert_clean_result(con, post_id, clean)
-        insert_sentiment_result(con, post_id, sentiment)
-        insert_keyword_results(con, post_id, kw_hits)
-        insert_spam_result(con, post_id, spam)
-        insert_feature_results(con, post_id, feat_hits)
+        # Sentiment (must attempt to write)
+        try:
+            sentiment = analyzer.analyze_sentiment(post)
+        except Exception as e:
+            sentiment = rule.analyze_sentiment(post)
+            if len(samples) < 5:
+                samples.append(f"{post_id}:sentiment:{e}")
+        try:
+            insert_sentiment_result(con, post_id, sentiment)
+        except Exception as e:
+            failed += 1
+            if len(samples) < 5:
+                samples.append(f"{post_id}:sentiment_write:{e}")
+
+        # Keywords (must attempt to write)
+        try:
+            kw_hits = analyzer.extract_keywords(post, project_keywords)
+        except Exception as e:
+            kw_hits = rule.extract_keywords(post, project_keywords)
+            if len(samples) < 5:
+                samples.append(f"{post_id}:keywords:{e}")
+        try:
+            insert_keyword_results(con, post_id, kw_hits)
+        except Exception as e:
+            failed += 1
+            if len(samples) < 5:
+                samples.append(f"{post_id}:keywords_write:{e}")
+
+        # Spam (best-effort)
+        try:
+            spam = analyzer.detect_spam(post)
+        except Exception:
+            spam = rule.detect_spam(post)
+        try:
+            insert_spam_result(con, post_id, spam)
+        except Exception:
+            pass
+
+        # Features (best-effort)
+        try:
+            feat_hits = analyzer.extract_features(post)
+        except Exception:
+            feat_hits = rule.extract_features(post)
+        try:
+            insert_feature_results(con, post_id, feat_hits)
+        except Exception:
+            pass
+
+    if failed > 0:
+        log.warning("run_analysis partial_fail project_id=%s failed=%s samples=%s", project_id, failed, samples)
 
 
 def upsert_daily_keyword_metric(

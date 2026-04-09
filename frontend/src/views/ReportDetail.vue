@@ -1,6 +1,8 @@
+<!-- 作用：前端页面：报告详情视图。 -->
+
 <template>
   <el-space direction="vertical" :size="12" fill>
-    <PageSection title="Report Detail">
+    <PageSection title="报告详情">
       <template #extra>
         <el-button
           v-if="report"
@@ -11,7 +13,7 @@
           :disabled="!canGenerate"
           @click="onGenerate"
         >
-          Generate
+          生成
         </el-button>
       </template>
       <el-alert
@@ -27,23 +29,23 @@
 
       <template v-else-if="report">
         <el-descriptions :column="2" border>
-          <el-descriptions-item label="Title">{{ report.title || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="Type">
-            <el-tag size="small" type="info">{{ report.report_type || '-' }}</el-tag>
+          <el-descriptions-item label="标题">{{ report.title || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="类型">
+            <el-tag size="small" type="info">{{ typeText(report.report_type || '-') }}</el-tag>
           </el-descriptions-item>
-          <el-descriptions-item label="Project">{{ projectName }}</el-descriptions-item>
-          <el-descriptions-item label="Status">
-            <el-tag :type="statusType(report.status)" size="small">{{ report.status || '-' }}</el-tag>
+          <el-descriptions-item label="项目">{{ projectName }}</el-descriptions-item>
+          <el-descriptions-item label="状态">
+            <el-tag :type="statusType(report.status)" size="small">{{ statusText(report.status) }}</el-tag>
           </el-descriptions-item>
-          <el-descriptions-item label="Data Range">{{ fmtRange(report.data_start_date, report.data_end_date) }}</el-descriptions-item>
-          <el-descriptions-item label="Created At">{{ fmtTime(report.created_at) }}</el-descriptions-item>
-          <el-descriptions-item label="Summary" :span="2">{{ report.summary || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="数据范围">{{ fmtRange(report.data_start_date, report.data_end_date) }}</el-descriptions-item>
+          <el-descriptions-item label="创建时间">{{ fmtTime(report.created_at) }}</el-descriptions-item>
+          <el-descriptions-item label="摘要" :span="2">{{ report.summary || '-' }}</el-descriptions-item>
         </el-descriptions>
       </template>
     </PageSection>
 
-    <PageSection title="Content (Markdown)">
-      <el-empty v-if="!report" description="No report" />
+    <PageSection title="内容（标记文本）">
+      <el-empty v-if="!report" description="暂无报告" />
       <template v-else>
         <SafeMarkdown :markdown="report.content_markdown || ''" />
       </template>
@@ -54,32 +56,32 @@
       type="warning"
       :closable="false"
       show-icon
-      :title="`Report status is ${report.status}. Aggregated panels are available after success.`"
+      :title="`当前状态为 ${statusText(report.status)}，聚合面板需在成功后可用。`"
     />
 
     <template v-if="report && (report.status === 'success' || report.status === 'done')">
-      <PageSection title="Public Opinion Overview">
+      <PageSection title="舆情概览">
         <el-skeleton v-if="aggLoading" :rows="2" animated />
         <el-alert v-else-if="aggError" type="error" :title="aggError" :closable="false" show-icon />
-        <el-empty v-else-if="!overviewItems.length" description="No data" />
+        <el-empty v-else-if="!overviewItems.length" description="暂无数据" />
         <el-table v-else :data="overviewRows" border>
-          <el-table-column prop="brand" label="Brand" min-width="160" />
-          <el-table-column prop="posts" label="Posts" width="120" />
-          <el-table-column prop="pos" label="Positive %" width="120" />
-          <el-table-column prop="neg" label="Negative %" width="120" />
+          <el-table-column prop="brand" label="品牌" min-width="160" />
+          <el-table-column prop="posts" label="帖子数" width="120" />
+          <el-table-column prop="pos" label="正向 %" width="120" />
+          <el-table-column prop="neg" label="负向 %" width="120" />
         </el-table>
       </PageSection>
 
-      <PageSection title="Sentiment Trend">
+      <PageSection title="情感趋势">
         <template #extra>
           <el-radio-group v-model="trendMode" size="small">
-            <el-radio-button value="positive">Positive</el-radio-button>
-            <el-radio-button value="negative">Negative</el-radio-button>
+            <el-radio-button value="positive">正向</el-radio-button>
+            <el-radio-button value="negative">负向</el-radio-button>
           </el-radio-group>
         </template>
         <el-skeleton v-if="aggLoading" :rows="2" animated />
         <el-alert v-else-if="aggError" type="error" :title="aggError" :closable="false" show-icon />
-        <el-empty v-else-if="!trendDates.length" description="No data" />
+        <el-empty v-else-if="!trendDates.length" description="暂无数据" />
         <SentimentTrendChart
           v-else
           :height="'320px'"
@@ -90,17 +92,17 @@
         />
       </PageSection>
 
-      <PageSection title="Keyword Analysis">
+      <PageSection title="关键词分析">
         <el-skeleton v-if="aggLoading" :rows="2" animated />
         <el-alert v-else-if="aggError" type="error" :title="aggError" :closable="false" show-icon />
-        <el-empty v-else-if="!kwDates.length" description="No data" />
+        <el-empty v-else-if="!kwDates.length" description="暂无数据" />
         <KeywordStackedBarChart v-else :height="'320px'" :dates="kwDates" :series="kwSeries" />
       </PageSection>
 
-      <PageSection title="Feature Analysis">
+      <PageSection title="特征分析">
         <el-skeleton v-if="aggLoading" :rows="2" animated />
         <el-alert v-else-if="aggError" type="error" :title="aggError" :closable="false" show-icon />
-        <el-empty v-else-if="!featDates.length" description="No data" />
+        <el-empty v-else-if="!featDates.length" description="暂无数据" />
         <KeywordStackedBarChart
           v-else
           :height="'320px'"
@@ -109,13 +111,13 @@
         />
       </PageSection>
 
-      <PageSection title="Competitor Compare">
-        <el-empty v-if="!overviewItems.length" description="No data" />
+      <PageSection title="竞品对比">
+        <el-empty v-if="!overviewItems.length" description="暂无数据" />
         <el-table v-else :data="overviewRows" border>
-          <el-table-column prop="brand" label="Brand" min-width="160" />
-          <el-table-column prop="posts" label="Posts" width="120" />
-          <el-table-column prop="pos" label="Positive %" width="120" />
-          <el-table-column prop="neg" label="Negative %" width="120" />
+          <el-table-column prop="brand" label="品牌" min-width="160" />
+          <el-table-column prop="posts" label="帖子数" width="120" />
+          <el-table-column prop="pos" label="正向 %" width="120" />
+          <el-table-column prop="neg" label="负向 %" width="120" />
         </el-table>
       </PageSection>
     </template>
@@ -207,6 +209,23 @@ function statusType(s) {
   return 'info'
 }
 
+function statusText(v) {
+  if (v === 'pending') return '待处理'
+  if (v === 'running') return '生成中'
+  if (v === 'success' || v === 'done') return '成功'
+  if (v === 'failed') return '失败'
+  if (v === 'error') return '错误'
+  return v || '-'
+}
+
+function typeText(v) {
+  if (v === 'daily') return '日报'
+  if (v === 'weekly') return '周报'
+  if (v === 'monthly') return '月报'
+  if (v === 'special') return '专题'
+  return v || '-'
+}
+
 function ratio(n, d) {
   const a = Number(n || 0)
   const b = Number(d || 0)
@@ -224,7 +243,7 @@ const overviewRows = computed(() => {
     const pos = Number(it?.positive_count || 0)
     const neg = Number(it?.negative_count || 0)
     return {
-      brand: brandNameById.value[bid] || `#${bid || '-'}`,
+      brand: brandNameById.value[bid] || (bid ? `品牌 ${bid}` : '-'),
       posts: total.toLocaleString(),
       pos: pct(ratio(pos, total)),
       neg: pct(ratio(neg, total)),
@@ -254,7 +273,7 @@ function parseCsvStrs(raw) {
 async function loadReport() {
   const rid = Number(route.params.id)
   if (!Number.isFinite(rid) || rid <= 0) {
-    error.value = 'Invalid report id'
+    error.value = '无效的报告编号'
     return
   }
   if (ac) ac.abort()
@@ -276,13 +295,13 @@ async function loadReport() {
 async function onGenerate() {
   const rid = Number(route.params.id)
   if (!Number.isFinite(rid) || rid <= 0) {
-    ElMessage.error('Invalid report id')
+    ElMessage.error('无效的报告编号')
     return
   }
   genLoading.value = true
   try {
     await generateReport(rid)
-    ElMessage.success(`Generated report #${rid}`)
+    ElMessage.success(`已生成报告 #${rid}`)
     await loadReport()
     await loadAggregates()
   } catch (e) {

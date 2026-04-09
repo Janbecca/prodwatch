@@ -1,3 +1,5 @@
+# 作用：LLM：从文件加载任务配置（支持热更新/校验）。
+
 from __future__ import annotations
 
 import json

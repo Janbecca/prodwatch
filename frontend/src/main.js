@@ -1,3 +1,5 @@
+// 作用：前端入口：创建 Vue 应用并挂载路由/布局/全局样式。
+
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import ElementPlus from 'element-plus'

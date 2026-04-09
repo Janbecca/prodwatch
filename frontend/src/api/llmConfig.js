@@ -1,3 +1,5 @@
+// 作用：前端 API：LLM 配置相关后端接口调用封装。
+
 import { getJSON } from './http'
 
 async function sendJSON(path, method, body, options = {}) {
@@ -10,6 +12,14 @@ async function sendJSON(path, method, body, options = {}) {
   })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
+    try {
+      const j = JSON.parse(text)
+      if (j?.detail) {
+        throw new Error(`HTTP ${res.status}: ${typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail)}`)
+      }
+    } catch {
+      // ignore JSON parse errors
+    }
     throw new Error(`HTTP ${res.status}: ${text || res.statusText}`)
   }
   return await res.json().catch(() => ({}))

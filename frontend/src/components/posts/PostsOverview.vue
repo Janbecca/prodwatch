@@ -1,5 +1,7 @@
+<!-- 作用：前端组件：帖子模块组件（PostsOverview）。 -->
+
 <template>
-  <PageSection title="Overview">
+  <PageSection title="概览">
     <el-alert
       v-if="store.overviewError"
       type="error"
@@ -12,8 +14,8 @@
     <el-skeleton v-if="store.overviewLoading" :rows="2" animated />
 
     <template v-else>
-      <el-empty v-if="!store.queried" description="Click Query to load overview" />
-      <el-empty v-else-if="!store.overview" description="No data" />
+      <el-empty v-if="!store.queried" description="点击“查询”加载概览" />
+      <el-empty v-else-if="!store.overview" description="暂无数据" />
 
       <el-row v-else :gutter="12">
         <el-col v-for="c in cards" :key="c.key" :span="4">
@@ -38,11 +40,11 @@ const cards = computed(() => {
   const o = store.overview || {}
   const fmt = (n) => Number(n || 0).toLocaleString()
   return [
-    { key: 'total', label: 'Total Posts', value: fmt(o.total) },
-    { key: 'valid', label: 'Valid Posts', value: fmt(o.valid_count) },
-    { key: 'negative', label: 'Negative Posts', value: fmt(o.negative_count) },
-    { key: 'spam', label: 'Spam Posts', value: fmt(o.spam_count) },
-    { key: 'kw', label: 'Hot Keywords', value: fmt(o.hot_keyword_count) },
+    { key: 'total', label: '总帖子数', value: fmt(o.total) },
+    { key: 'valid', label: '有效帖子数', value: fmt(o.valid_count) },
+    { key: 'negative', label: '负向帖子数', value: fmt(o.negative_count) },
+    { key: 'spam', label: '垃圾帖子数', value: fmt(o.spam_count) },
+    { key: 'kw', label: '热门关键词数', value: fmt(o.hot_keyword_count) },
   ]
 })
 </script>
@@ -57,4 +59,3 @@ const cards = computed(() => {
   font-weight: 700;
 }
 </style>
-

@@ -1,3 +1,5 @@
+<!-- 作用：前端组件：项目模块组件（ProjectBaseForm）。 -->
+
 <template>
   <PageSection title="项目基础信息配置">
     <el-form label-width="110px">
@@ -47,11 +49,10 @@ import { reactive } from 'vue'
 import PageSection from '../common/PageSection.vue'
 
 const form = reactive({
-  name: 'Demo Project',
+  name: '演示项目',
   category: 'demo',
-  desc: '这是一个用于展示前端骨架的 Mock 项目。',
+  desc: '这是一个用于展示前端骨架的模拟项目。',
   status: 'active',
   refreshMode: 'manual',
 })
 </script>
-

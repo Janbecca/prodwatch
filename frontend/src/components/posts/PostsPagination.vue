@@ -1,3 +1,5 @@
+<!-- 作用：前端组件：帖子模块组件（PostsPagination）。 -->
+
 <template>
   <el-pagination
     :current-page="store.page"

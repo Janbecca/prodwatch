@@ -1,3 +1,5 @@
+// 作用：前端 API：HTTP 客户端与拦截器封装相关后端接口调用封装。
+
 const API_BASE = import.meta.env.VITE_API_BASE || ''
 
 export async function getJSON(path, options = {}) {
@@ -15,7 +17,17 @@ export async function getJSON(path, options = {}) {
       })
       if (!res.ok) {
         const text = await res.text().catch(() => '')
-        const err = new Error(`HTTP ${res.status}: ${text || res.statusText}`)
+        let detail = null
+        try {
+          const j = JSON.parse(text)
+          if (j?.detail != null) detail = j.detail
+          else if (j?.message != null) detail = j.message
+          else if (j?.error != null) detail = j.error
+        } catch {
+          // ignore JSON parse errors
+        }
+        const msg = detail != null ? (typeof detail === 'string' ? detail : JSON.stringify(detail)) : (text || res.statusText)
+        const err = new Error(`HTTP ${res.status}: ${msg}`)
         err.status = res.status
         // Retry only for transient backend busy (503).
         if (res.status === 503 && attempt < retries) {

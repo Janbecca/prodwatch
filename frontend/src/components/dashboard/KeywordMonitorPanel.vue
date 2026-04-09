@@ -1,5 +1,7 @@
+<!-- 作用：前端组件：仪表盘模块组件（KeywordMonitorPanel）。 -->
+
 <template>
-  <PageSection title="Keyword Monitor">
+  <PageSection title="关键词监控">
     <template #extra>
       <el-input-number v-model="topN" :min="5" :max="50" size="small" controls-position="right" />
     </template>
@@ -16,8 +18,8 @@
     <el-skeleton v-if="loading" :rows="3" animated />
 
     <template v-else>
-      <el-empty v-if="!hasFilters" description="Select at least 1 brand and 1 platform" />
-      <el-empty v-else-if="!hasData" description="No data" />
+      <el-empty v-if="!hasFilters" description="至少选择 1 个品牌和 1 个平台" />
+      <el-empty v-else-if="!hasData" description="暂无数据" />
       <KeywordStackedBarChart v-else :height="'300px'" :dates="dates" :series="series" />
     </template>
   </PageSection>
@@ -74,7 +76,7 @@ async function load() {
   if (!dr) {
     dates.value = []
     series.value = []
-    error.value = 'Invalid date range (select a custom range, or use last 7/14/30 days).'
+    error.value = '日期范围无效（请选择自定义范围，或使用最近 7/14/30 天）。'
     loading.value = false
     return
   }

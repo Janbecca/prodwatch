@@ -1,3 +1,5 @@
+<!-- 作用：前端组件：项目配置模块组件（ProjectBrandList）。 -->
+
 <template>
   <PageSection title="已选品牌列表（只读）">
     <el-skeleton :loading="loading" animated>
@@ -7,7 +9,7 @@
       <template #default>
         <el-empty v-if="!rows || rows.length === 0" description="暂无品牌" />
         <el-table v-else :data="rows" stripe style="width: 100%">
-          <el-table-column prop="id" label="ID" width="80" />
+          <el-table-column prop="id" label="编号" width="80" />
           <el-table-column prop="name" label="名称" min-width="160" />
           <el-table-column prop="alias" label="别名" min-width="140" />
           <el-table-column prop="category" label="分类" min-width="120" />
@@ -32,4 +34,3 @@ defineProps({
   loading: { type: Boolean, default: false },
 })
 </script>
-

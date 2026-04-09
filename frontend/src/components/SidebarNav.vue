@@ -1,3 +1,5 @@
+<!-- 作用：前端组件：SidebarNav.vue模块组件（SidebarNav）。 -->
+
 <template>
   <el-menu :default-active="activePath" class="nav" router>
     <el-menu-item index="/dashboard">
@@ -13,7 +15,7 @@
       <span>项目配置</span>
     </el-menu-item>
     <el-menu-item index="/llm-config">
-      <span>LLM 配置</span>
+      <span>大模型配置</span>
     </el-menu-item>
   </el-menu>
 </template>

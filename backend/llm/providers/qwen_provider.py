@@ -1,3 +1,5 @@
+# 作用：LLM：模型提供方实现（通义千问（Qwen）提供方）。
+
 from __future__ import annotations
 
 import os
@@ -9,11 +11,9 @@ from backend.llm.providers.openai_compat_client import OpenAICompatConfig, chat_
 
 class QwenProvider:
     """
-    Qwen provider stub.
-
-    Intentionally left as a stub for now; router will fallback to MockProvider when not configured.
+    Qwen 提供商存根。
+    目前有意将其保留为存根；若未进行配置，路由器将回退至 MockProvider。
     """
-
     name = "qwen"
 
     def run_task(self, req: LLMTaskRequest) -> LLMTaskResponse:
@@ -48,6 +48,7 @@ class QwenProvider:
         except Exception as e:
             return LLMTaskResponse(ok=False, provider=self.name, model=str(model), prompt_version=req.prompt_version, output={}, error=str(e))
 
+# 根据不同任务类型规范化输出，确保返回格式一致，方便后续处理。
     def _normalize_output(self, task_type: str, parsed: Any) -> dict[str, Any] | None:
         t = str(task_type)
         if not isinstance(parsed, dict):
@@ -79,6 +80,8 @@ class QwenProvider:
         if t == "report_generation":
             return {
                 "summary": str(parsed.get("summary") or ""),
+                "executive_summary_md": str(parsed.get("executive_summary_md") or ""),
+                "strategy_suggestions_md": str(parsed.get("strategy_suggestions_md") or ""),
                 "content_markdown": str(parsed.get("content_markdown") or ""),
             }
         return parsed

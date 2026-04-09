@@ -1,3 +1,5 @@
+# 作用：LLM：任务配置示例文件（用于本地/自测）。
+
 # Example: per-task provider/model mapping.
 llm_tasks:
   crawler_generation:

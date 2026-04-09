@@ -1,3 +1,5 @@
+# 作用：LLM：Prompt 模板存储与版本管理。
+
 from __future__ import annotations
 
 import json

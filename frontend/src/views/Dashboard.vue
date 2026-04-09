@@ -1,6 +1,8 @@
+<!-- 作用：前端页面：仪表盘视图。 -->
+
 <template>
   <el-space direction="vertical" :size="12" fill>
-    <el-empty v-if="!hasProjects" description="No enabled project" />
+    <el-empty v-if="!hasProjects" description="暂无启用项目" />
     <template v-else>
       <DashboardFilters />
       <DashboardOverviewCards />
@@ -22,4 +24,3 @@ import KeywordMonitorPanel from '../components/dashboard/KeywordMonitorPanel.vue
 const projectsStore = useProjectsStore()
 const hasProjects = computed(() => projectsStore.projects.length > 0)
 </script>
-

@@ -1,3 +1,5 @@
+// 作用：前端组合式函数：useProjectSelect。
+
 import { computed } from 'vue'
 import { useProjectsStore } from '../stores/projects'
 

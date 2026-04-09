@@ -1,3 +1,5 @@
+<!-- 作用：前端组件：项目配置模块组件（ProjectConfigActions）。 -->
+
 <template>
   <PageSection title="项目配置操作">
     <template #extra>

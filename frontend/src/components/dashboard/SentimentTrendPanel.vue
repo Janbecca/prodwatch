@@ -1,9 +1,11 @@
+<!-- 作用：前端组件：仪表盘模块组件（SentimentTrendPanel）。 -->
+
 <template>
-  <PageSection title="Sentiment Trend">
+  <PageSection title="情感趋势">
     <template #extra>
       <el-radio-group v-model="mode" size="small">
-        <el-radio-button value="positive">Positive</el-radio-button>
-        <el-radio-button value="negative">Negative</el-radio-button>
+        <el-radio-button value="positive">正向</el-radio-button>
+        <el-radio-button value="negative">负向</el-radio-button>
       </el-radio-group>
     </template>
 
@@ -19,8 +21,8 @@
     <el-skeleton v-if="loading" :rows="3" animated />
 
     <template v-else>
-      <el-empty v-if="!hasFilters" description="Select at least 1 brand and 1 platform" />
-      <el-empty v-else-if="!hasData" description="No data" />
+      <el-empty v-if="!hasFilters" description="至少选择 1 个品牌和 1 个平台" />
+      <el-empty v-else-if="!hasData" description="暂无数据" />
       <SentimentTrendChart
         v-else
         :height="'300px'"
@@ -59,7 +61,7 @@ const brandNameById = computed(() => {
   for (const b of dashboard.brandOptions || []) {
     const id = Number(b?.id)
     if (!Number.isFinite(id)) continue
-    map[id] = b?.name ?? `Brand ${id}`
+    map[id] = b?.name ?? `品牌 ${id}`
   }
   return map
 })
@@ -95,7 +97,7 @@ async function load() {
   if (!dr) {
     dates.value = []
     series.value = []
-    error.value = 'Invalid date range (select a custom range, or use last 7/14/30 days).'
+    error.value = '日期范围无效（请选择自定义范围，或使用最近 7/14/30 天）。'
     loading.value = false
     return
   }

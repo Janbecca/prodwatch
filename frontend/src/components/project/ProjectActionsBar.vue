@@ -1,3 +1,5 @@
+<!-- 作用：前端组件：项目模块组件（ProjectActionsBar）。 -->
+
 <template>
   <PageSection title="操作区">
     <el-space wrap>
@@ -12,4 +14,3 @@
 <script setup>
 import PageSection from '../common/PageSection.vue'
 </script>
-

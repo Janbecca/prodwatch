@@ -1,10 +1,11 @@
+<!-- 作用：前端页面：LLM 配置视图。 -->
+
 <template>
   <el-space direction="vertical" :size="12" fill>
-    <el-alert title="全局 LLM 模型配置" type="info" :closable="false" show-icon>
+    <el-alert title="全局大模型配置" type="info" :closable="false" show-icon>
       <template #default>
         <div>当前配置对所有项目生效</div>
         <div>仅影响后续新任务</div>
-        <div>后端负责真实模型调用，前端不会接触任何 API Key。</div>
       </template>
     </el-alert>
 
@@ -20,20 +21,28 @@
     </el-space>
 
     <el-table v-loading="loading" :data="rows" border style="width: 100%">
-      <el-table-column prop="task_type" label="Task" width="180" />
+      <el-table-column prop="task_type" label="任务类型" width="180" />
       <el-table-column prop="title" label="说明" min-width="170" />
 
-      <el-table-column label="Provider" width="140">
+      <el-table-column label="模型提供方" width="140">
         <template #default="{ row }">
-          <el-select v-model="row.draft.provider" style="width: 120px">
+          <el-select v-model="row.draft.provider" style="width: 120px" filterable>
             <el-option v-for="p in providers" :key="p" :label="p" :value="p" />
           </el-select>
         </template>
       </el-table-column>
 
-      <el-table-column label="Model" min-width="170">
+      <el-table-column label="模型" min-width="170">
         <template #default="{ row }">
-          <el-select v-model="row.draft.model" style="width: 100%" clearable placeholder="选择模型（可留空）">
+          <el-select
+            v-model="row.draft.model"
+            style="width: 100%"
+            clearable
+            filterable
+            allow-create
+            default-first-option
+            placeholder="选择或输入模型（可留空）"
+          >
             <el-option
               v-for="m in modelsFor(row.draft.provider)"
               :key="m"
@@ -44,17 +53,25 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="Fallback Provider" width="170">
+      <el-table-column label="备选提供方" width="170">
         <template #default="{ row }">
-          <el-select v-model="row.draft.fallback_provider" style="width: 150px">
+          <el-select v-model="row.draft.fallback_provider" style="width: 150px" filterable>
             <el-option v-for="p in providers" :key="p" :label="p" :value="p" />
           </el-select>
         </template>
       </el-table-column>
 
-      <el-table-column label="Fallback Model" min-width="170">
+      <el-table-column label="备选模型" min-width="170">
         <template #default="{ row }">
-          <el-select v-model="row.draft.fallback_model" style="width: 100%" clearable placeholder="选择模型（可留空）">
+          <el-select
+            v-model="row.draft.fallback_model"
+            style="width: 100%"
+            clearable
+            filterable
+            allow-create
+            default-first-option
+            placeholder="选择或输入备选模型（可留空）"
+          >
             <el-option
               v-for="m in modelsFor(row.draft.fallback_provider)"
               :key="m"
@@ -91,6 +108,7 @@ const cheapDefaults = ref({})
 const rows = ref([])
 
 let currentController = null
+const allowedProviders = new Set(['mock', 'deepseek', 'qwen'])
 
 function toDraft(effective) {
   return {
@@ -131,7 +149,9 @@ async function load() {
       fetchLLMModels({ signal: currentController.signal }),
       fetchLLMConfig({ signal: currentController.signal }),
     ])
-    providers.value = Array.isArray(modelsData?.providers) ? modelsData.providers : []
+    providers.value = (Array.isArray(modelsData?.providers) ? modelsData.providers : []).filter((p) =>
+      allowedProviders.has(String(p || '').toLowerCase())
+    )
     modelsByProvider.value = modelsData?.models_by_provider || {}
     cheapDefaults.value = modelsData?.cheap_defaults || {}
 

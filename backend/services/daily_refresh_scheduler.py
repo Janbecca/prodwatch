@@ -1,3 +1,5 @@
+# 作用：后端服务层：每日刷新调度相关业务逻辑封装。
+
 from __future__ import annotations
 
 import logging
@@ -14,6 +16,9 @@ from backend.services.refresh_service import RefreshResult, get_refresh_service
 
 log = logging.getLogger("prodwatch.scheduler")
 
+DEFAULT_DAILY_REFRESH_HOUR = 2
+DEFAULT_DAILY_REFRESH_MINUTE = 0
+
 
 @dataclass(frozen=True)
 class SchedulerConfig:
@@ -26,8 +31,9 @@ class SchedulerConfig:
 
 def load_scheduler_config() -> SchedulerConfig:
     enabled = os.environ.get("PRODWATCH_SCHEDULER_ENABLED", "1").strip() not in {"0", "false", "False"}
-    hour = int(os.environ.get("PRODWATCH_DAILY_REFRESH_HOUR", "2"))
-    minute = int(os.environ.get("PRODWATCH_DAILY_REFRESH_MINUTE", "0"))
+    # Default: 02:00 local time. Keep env override.
+    hour = int(os.environ.get("PRODWATCH_DAILY_REFRESH_HOUR", str(DEFAULT_DAILY_REFRESH_HOUR)))
+    minute = int(os.environ.get("PRODWATCH_DAILY_REFRESH_MINUTE", str(DEFAULT_DAILY_REFRESH_MINUTE)))
     posts_per_target = int(os.environ.get("PRODWATCH_DAILY_POSTS_PER_TARGET", "3"))
     created_by = os.environ.get("PRODWATCH_SCHEDULER_CREATED_BY", "scheduler").strip() or "scheduler"
     # clamp
@@ -173,4 +179,3 @@ def get_daily_scheduler() -> DailyRefreshScheduler:
     if _scheduler is None:
         _scheduler = DailyRefreshScheduler(load_scheduler_config())
     return _scheduler
-

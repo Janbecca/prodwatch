@@ -1,3 +1,5 @@
+# 作用：后端 API：项目刷新相关路由与接口实现。
+
 from __future__ import annotations
 
 import sqlite3
@@ -23,6 +25,37 @@ class ManualRefreshPayload(BaseModel):
     created_by: str = Field(default="user")
 
 
+@router.get("/{project_id}/refresh/status")
+def project_refresh_status(project_id: int, db: sqlite3.Connection = Depends(get_db)) -> dict[str, Any]:
+    """
+    Refresh status endpoint for the frontend.
+
+    Why:
+    - /refresh returns 409 when a refresh is already running (by design).
+    - Browsers may log non-2xx requests with an "initiator" stack trace in the console.
+      This endpoint lets the UI check status first and avoid triggering a 409 in normal cases.
+    """
+    svc = get_refresh_service()
+    # First check in-process lock: avoids a short race window where a refresh is running but
+    # crawl_job hasn't been created yet (DB check would return not running).
+    if svc.is_running_in_memory(int(project_id)):
+        return {"ok": True, "project_id": int(project_id), "running": True, "reason": "in_memory_lock"}
+
+    with db:
+        job_id = svc.get_recent_running_job_id(db, int(project_id))
+        if job_id is None:
+            return {"ok": True, "project_id": int(project_id), "running": False}
+        row = db.execute("SELECT id, started_at FROM crawl_job WHERE id=? LIMIT 1;", (int(job_id),)).fetchone()
+    return {
+        "ok": True,
+        "project_id": int(project_id),
+        "running": True,
+        "reason": "db_running",
+        "crawl_job_id": int(job_id),
+        "started_at": (row["started_at"] if row is not None else None),
+    }
+
+
 @router.post("/{project_id}/refresh")
 def manual_refresh_project(
     project_id: int, payload: ManualRefreshPayload, db: sqlite3.Connection = Depends(get_db)
@@ -31,8 +64,8 @@ def manual_refresh_project(
     Trigger a manual refresh (crawl + analysis + aggregation) for a project.
     Runs synchronously in-process (suitable for demo/dev).
     """
+    svc = get_refresh_service()
     try:
-        svc = get_refresh_service()
         with db:
             r = svc.refresh_project_sync(
                 con=db,
@@ -48,7 +81,21 @@ def manual_refresh_project(
         raise HTTPException(status_code=500, detail=f"manual refresh failed: {e}")
 
     if r.skipped:
-        raise HTTPException(status_code=409, detail=f"refresh skipped: {r.reason}")
+        # Keep the API contract (409) but make the error message actionable for the frontend.
+        # Do NOT change request/response schema on success; only improve the conflict detail.
+        if r.reason == "db_running" and r.crawl_job_id:
+            raise HTTPException(
+                status_code=409,
+                detail=f"刷新被跳过：该项目已有刷新任务在运行中（任务编号={int(r.crawl_job_id)}），请稍后重试。",
+            )
+        if r.reason == "in_memory_lock":
+            if r.crawl_job_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"刷新被跳过：该项目正在刷新中（任务编号={int(r.crawl_job_id)}），请稍后重试。",
+                )
+            raise HTTPException(status_code=409, detail="刷新被跳过：该项目正在刷新中，请稍后重试。")
+        raise HTTPException(status_code=409, detail=f"刷新被跳过：{r.reason or '未知原因'}")
     if r.error_message:
         raise HTTPException(status_code=500, detail=f"manual refresh failed: {r.error_message}")
 
