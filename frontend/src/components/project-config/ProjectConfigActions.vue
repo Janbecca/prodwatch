@@ -7,20 +7,24 @@
     </template>
 
     <el-space wrap>
-      <el-button :disabled="loading" type="primary" plain @click="$emit('create')">新建</el-button>
-
-      <el-tooltip content="仅允许停用项目编辑" placement="top">
-        <el-button :disabled="!canEdit || loading" type="warning" plain @click="$emit('edit')">编辑</el-button>
+      <el-tooltip :disabled="!isRefreshing" :content="blockHint" placement="top">
+        <el-button :disabled="loading || isRefreshing" type="primary" plain @click="$emit('create')">新建</el-button>
       </el-tooltip>
 
-      <el-button v-if="mode !== 'view'" :disabled="loading" type="primary" @click="$emit('save')">保存</el-button>
+      <el-tooltip content="仅允许停用项目编辑" placement="top">
+        <el-button :disabled="!canEdit || loading || isRefreshing" type="warning" plain @click="$emit('edit')">编辑</el-button>
+      </el-tooltip>
+
+      <el-tooltip v-if="mode !== 'view'" :disabled="!isRefreshing" :content="blockHint" placement="top">
+        <el-button :disabled="loading || isRefreshing" type="primary" @click="$emit('save')">保存</el-button>
+      </el-tooltip>
       <el-button v-if="mode !== 'view'" :disabled="loading" @click="$emit('cancel')">取消</el-button>
 
       <el-divider direction="vertical" />
 
       <el-button
         v-if="project && mode === 'view'"
-        :disabled="loading"
+        :disabled="loading || isRefreshing"
         :type="String(project.status || '') === 'active' ? 'danger' : 'success'"
         plain
         @click="$emit('toggle-active')"
@@ -36,7 +40,9 @@
         @confirm="$emit('delete')"
       >
         <template #reference>
-          <el-button type="danger" plain :disabled="loading">删除</el-button>
+          <el-tooltip :disabled="!isRefreshing" :content="blockHint" placement="top">
+            <el-button type="danger" plain :disabled="loading || isRefreshing">删除</el-button>
+          </el-tooltip>
         </template>
       </el-popconfirm>
     </el-space>
@@ -46,6 +52,7 @@
 <script setup>
 import { computed } from 'vue'
 import PageSection from '../common/PageSection.vue'
+import { useRefreshStore } from '../../stores/refresh'
 
 const props = defineProps({
   mode: { type: String, default: 'view' }, // view | edit | create
@@ -55,6 +62,10 @@ const props = defineProps({
 })
 
 defineEmits(['create', 'edit', 'save', 'cancel', 'toggle-active', 'delete'])
+
+const refreshStore = useRefreshStore()
+const isRefreshing = computed(() => refreshStore.isRefreshing(props.project?.id))
+const blockHint = '项目正在刷新中，请稍后操作'
 
 const modeText = computed(() => {
   if (props.mode === 'create') return '新建态'

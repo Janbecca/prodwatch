@@ -9,7 +9,10 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from backend.api.db import get_db
+from backend.api.db import DEFAULT_DB_PATH, get_db, resolve_db_path
+from backend.llm.config_store import get_llm_config_store
+from backend.llm.provider_factory import get_provider_factory
+from backend.llm.prompts.store import get_prompt_store
 
 from backend.services.refresh_service import get_refresh_service
 
@@ -56,25 +59,48 @@ def project_refresh_status(project_id: int, db: sqlite3.Connection = Depends(get
     }
 
 
-@router.post("/{project_id}/refresh")
+@router.post("/{project_id}/refresh", status_code=202)
 def manual_refresh_project(
     project_id: int, payload: ManualRefreshPayload, db: sqlite3.Connection = Depends(get_db)
 ) -> dict[str, Any]:
     """
     Trigger a manual refresh (crawl + analysis + aggregation) for a project.
-    Runs synchronously in-process (suitable for demo/dev).
+    Starts a background refresh job and returns immediately.
     """
     svc = get_refresh_service()
+
+    # Provide a deterministic "plan" for post generation at trigger time.
+    # Avoid depending on the request DB connection here to reduce "database is locked" races
+    # with the just-started background refresh worker.
+    post_generation_plan: dict[str, Any] | None = None
     try:
-        with db:
-            r = svc.refresh_project_sync(
-                con=db,
-                project_id=int(project_id),
-                stat_date=payload.stat_date,
-                posts_per_target=int(payload.posts_per_target),
-                trigger="manual",
-                created_by=str(payload.created_by or "user"),
-            )
+        cfg = get_llm_config_store().get("crawler_generation", con=None)
+        prompt_version = get_prompt_store().get("crawler_generation").version
+        provider = str(getattr(cfg, "provider", "") or "").strip().lower() or "deepseek"
+        if get_provider_factory().get(provider) is None:
+            provider = (get_provider_factory().list_provider_names() or ["deepseek"])[0]
+        model = str(getattr(cfg, "model", "") or "").strip()
+        post_generation_plan = {
+            "generated_by": "llm",
+            "provider": provider,
+            "model": model,
+            "prompt_version": str(prompt_version or "").strip(),
+        }
+    except Exception:
+        # Best-effort fallback: still return a stable shape for the frontend logger.
+        post_generation_plan = {"generated_by": "llm", "provider": "unknown", "model": "", "prompt_version": ""}
+
+    try:
+        db_path = resolve_db_path(DEFAULT_DB_PATH)
+        r = svc.refresh_project_async(
+            db_path=str(db_path),
+            con=db,
+            project_id=int(project_id),
+            stat_date=payload.stat_date,
+            posts_per_target=int(payload.posts_per_target),
+            trigger="manual",
+            created_by=str(payload.created_by or "user"),
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -104,4 +130,7 @@ def manual_refresh_project(
         "crawl_job_id": int(r.crawl_job_id or 0),
         "stat_date": str(r.stat_date),
         "triggered_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        "accepted": True,
+        "running": True,
+        "post_generation_plan": post_generation_plan,
     }

@@ -1,6 +1,5 @@
 {
   "task_type": "keyword_extraction",
-  "version": "v1",
-  "template": "You extract project monitoring keywords from a post.\\n\\nPost text:\\n{{text}}\\n\\nProject keywords (JSON):\\n{{project_keywords}}\\n\\nReturn JSON only: {\"hits\":[{\"keyword\":\"...\",\"keyword_type\":\"...\",\"confidence\":0..1}]}"
+  "version": "v2",
+  "template": "你是“项目监控词语义命中器”。只做一件事：判断帖子内容是否“语义上命中”用户配置的监控词（不要求原文出现完全一致的字面）。\\n\\n输入：\\n- text: 帖子全文\\n- project_keywords: 用户配置的监控词列表（JSON 数组，字符串）\\n\\n硬性要求：\\n1) 只返回严格可解析 JSON（不要 markdown，不要多余文本）。\\n2) 只能从 project_keywords 中选择命中的 keyword；不允许输出 project_keywords 之外的新词。\\n3) 语义命中：允许同义表达/近义表达/指代，但必须给出 evidence（来自原文的短片段，能说明为什么命中）。\\n4) 如果没有任何命中，hits 返回空数组 []。\\n\\n输出格式：\\n{\\n  \"hits\": [\\n    {\"keyword\": \"<must be in project_keywords>\", \"confidence\": 0.0, \"evidence\": \"<excerpt from text>\", \"keyword_type\": \"\"}\\n  ]\\n}\\n\\n字段说明：\\n- confidence: 0~1，表示命中把握；不确定时给低分。\\n- keyword_type: 可留空字符串 \"\"（系统会用项目配置补全类型）。\\n- evidence: 直接摘取原文 10~40 字左右，不要编造。\\n\\ntext={{text}}\\nproject_keywords={{project_keywords}}\\n"
 }
-

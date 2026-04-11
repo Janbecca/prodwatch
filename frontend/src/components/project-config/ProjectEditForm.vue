@@ -59,16 +59,18 @@
               <el-option v-for="b in localBrandOptions" :key="b.id" :label="b.name" :value="b.id">
                 <div class="brand-opt">
                   <span class="brand-opt__name">{{ b.name }}</span>
-                  <el-button
+                  <el-tooltip :disabled="!isRefreshing" content="项目正在刷新中，请稍后操作" placement="top">
+                    <el-button
                     link
                     type="danger"
                     size="small"
                     class="brand-opt__del"
-                    :disabled="!b.is_deletable || deletingBrandIds.has(b.id)"
+                    :disabled="isRefreshing || !b.is_deletable || deletingBrandIds.has(b.id)"
                     @click.stop.prevent="onDeleteBrand(b)"
                   >
                     删除
-                  </el-button>
+                    </el-button>
+                  </el-tooltip>
                 </div>
               </el-option>
             </el-select>
@@ -97,11 +99,11 @@
               <el-input v-model="row.keyword" :disabled="readOnly" />
             </template>
           </el-table-column>
-          <el-table-column label="权重" width="120">
+          <!-- <el-table-column label="权重" width="120">
             <template #default="{ row }">
               <el-input-number v-model="row.weight" :disabled="readOnly" :min="0" :max="999" />
             </template>
-          </el-table-column>
+          </el-table-column> -->
           <el-table-column label="是否启用" width="140">
             <template #default="{ row }">
               <el-switch v-model="row.is_enabled" :disabled="readOnly" :active-value="1" :inactive-value="0" />
@@ -109,13 +111,19 @@
           </el-table-column>
           <el-table-column v-if="!readOnly" label="操作" width="120">
             <template #default="{ $index }">
-              <el-button size="small" type="danger" plain @click="removeKeyword($index)">删除</el-button>
+              <el-tooltip :disabled="!isRefreshing" content="项目正在刷新中，请稍后操作" placement="top">
+                <el-button size="small" type="danger" plain :disabled="isRefreshing" @click="removeKeyword($index)">
+                  删除
+                </el-button>
+              </el-tooltip>
             </template>
           </el-table-column>
         </el-table>
 
         <div v-if="!readOnly" class="kw-actions">
-          <el-button plain @click="addKeyword()">新增关键词</el-button>
+          <el-tooltip :disabled="!isRefreshing" content="项目正在刷新中，请稍后操作" placement="top">
+            <el-button plain :disabled="isRefreshing" @click="addKeyword()">新增关键词</el-button>
+          </el-tooltip>
         </div>
       </el-form-item>
     </el-form>
@@ -127,6 +135,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, ref, watch } from 'vue'
 import PageSection from '../common/PageSection.vue'
 import { createBrand, deleteBrand } from '../../api/meta'
+import { useRefreshStore } from '../../stores/refresh'
 
 const props = defineProps({
   mode: { type: String, default: 'view' }, // create/edit
@@ -140,6 +149,8 @@ const emit = defineEmits(['refresh-meta'])
  const formRef = ref()
 
  const readOnly = computed(() => false)
+const refreshStore = useRefreshStore()
+const isRefreshing = computed(() => refreshStore.isRefreshing(props.model?.id))
 
  const localBrandOptions = ref(Array.isArray(props.brandOptions) ? [...props.brandOptions] : [])
 const creatingBrandNames = new Set()
@@ -197,10 +208,12 @@ const rules = {
 }
 
 function addKeyword() {
+  if (isRefreshing.value) return
   props.model.keywords.push({ keyword: '', keyword_type: '', weight: 0, is_enabled: 1 })
 }
 
 function removeKeyword(idx) {
+  if (isRefreshing.value) return
   props.model.keywords.splice(idx, 1)
 }
 
@@ -222,6 +235,10 @@ async function validate() {
 }
 
 async function onDeleteBrand(b) {
+  if (isRefreshing.value) {
+    ElMessage.warning('项目正在刷新中，请稍后再删除品牌')
+    return
+  }
   const bid = Number(b?.id)
   if (!Number.isFinite(bid) || bid <= 0) return
   if (!b?.is_deletable) {

@@ -55,10 +55,26 @@
             {{ item.invalid_reason }}
           </el-text>
         </el-descriptions-item>
-        <el-descriptions-item label="命中关键词">
+        <el-descriptions-item label="关键词命中">
           <el-space wrap>
             <el-tag v-for="k in item.keywords || []" :key="k" size="small">{{ k }}</el-tag>
             <el-text v-if="!item.keywords || item.keywords.length === 0" type="info">-</el-text>
+          </el-space>
+        </el-descriptions-item>
+        <el-descriptions-item label="话题分析">
+          <el-space wrap>
+            <el-tag v-for="t in topicTags" :key="t" size="small" type="success">{{ t }}</el-tag>
+            <el-text v-if="topicTags.length === 0" type="info">-</el-text>
+          </el-space>
+        </el-descriptions-item>
+        <el-descriptions-item v-if="entityTags.length" label="实体">
+          <el-space wrap>
+            <el-tag v-for="t in entityTags" :key="t" size="small" type="info">{{ t }}</el-tag>
+          </el-space>
+        </el-descriptions-item>
+        <el-descriptions-item v-if="issueTags.length" label="问题归纳">
+          <el-space wrap>
+            <el-tag v-for="t in issueTags" :key="t" size="small" type="warning">{{ t }}</el-tag>
           </el-space>
         </el-descriptions-item>
         <el-descriptions-item label="特征">
@@ -113,6 +129,47 @@ const brandName = computed(() => {
 const platformName = computed(() => {
   const pid = Number(item.value?.platform_id)
   return platformNameById.value[pid] || (pid ? `#${pid}` : '-')
+})
+
+function uniqStrings(arr) {
+  const out = []
+  const seen = new Set()
+  for (const x of arr || []) {
+    const s = String(x || '').trim()
+    if (!s) continue
+    if (seen.has(s)) continue
+    seen.add(s)
+    out.push(s)
+  }
+  return out
+}
+
+function takeTextList(v, limit = 6) {
+  const out = []
+  if (Array.isArray(v)) {
+    for (const it of v) {
+      if (it == null) continue
+      if (typeof it === 'string') out.push(it)
+      else if (typeof it === 'object') {
+        if (it.text) out.push(String(it.text))
+        else if (it.topic) out.push(String(it.topic))
+        else if (it.name) out.push(String(it.name))
+      }
+    }
+  }
+  return uniqStrings(out).slice(0, limit)
+}
+
+const topicTags = computed(() => {
+  return takeTextList(item.value?.topics || item.value?.analysis_result?.topics, 12)
+})
+
+const entityTags = computed(() => {
+  return takeTextList(item.value?.entities || item.value?.analysis_result?.entities, 12)
+})
+
+const issueTags = computed(() => {
+  return takeTextList(item.value?.issues || item.value?.analysis_result?.issues, 12)
 })
 
 const featureTags = computed(() => {

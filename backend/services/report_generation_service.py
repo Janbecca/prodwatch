@@ -13,7 +13,7 @@ from backend.report_chain_e import (
     fetch_candidate_posts,
     fetch_competitor_compare,
     fetch_sentiment_trend,
-    fetch_top_keywords,
+    fetch_top_topics,
     fetch_top_negative_features,
     llm_mock_generate_markdown,
     read_report,
@@ -37,7 +37,7 @@ class ReportGenerationInput:
     report: sqlite3.Row
     overview: dict[str, Any]
     trend: list[dict[str, Any]]
-    top_keywords: list[dict[str, Any]]
+    top_topics: list[dict[str, Any]]
     top_features: list[dict[str, Any]]
     competitor: list[dict[str, Any]]
     posts: dict[str, list[sqlite3.Row]]
@@ -80,7 +80,7 @@ class ReportGenerationService:
 
         overview = fetch_agg_overview(con, project_id, start, end, cfg)
         trend = fetch_sentiment_trend(con, project_id, start, end, cfg) if cfg.include_trend else []
-        top_keywords = fetch_top_keywords(con, project_id, start, end, cfg) if cfg.include_topics else []
+        top_topics = fetch_top_topics(con, project_id, start, end, cfg) if cfg.include_topics else []
         top_features = (
             fetch_top_negative_features(con, project_id, start, end, cfg) if cfg.include_feature_analysis else []
         )
@@ -93,7 +93,7 @@ class ReportGenerationService:
             report=report,
             overview=overview,
             trend=trend,
-            top_keywords=top_keywords,
+            top_topics=top_topics,
             top_features=top_features,
             competitor=competitor,
             posts=posts,
@@ -184,7 +184,7 @@ class ReportGenerationService:
             report=input_.report,
             overview=input_.overview,
             trend=input_.trend,
-            top_keywords=input_.top_keywords,
+            top_topics=input_.top_topics,
             top_features=input_.top_features,
             competitor=input_.competitor,
             posts=input_.posts,
@@ -217,7 +217,7 @@ class ReportGenerationService:
             },
             "overview": input_.overview or {},
             "trend": (input_.trend or [])[:14],
-            "top_keywords": (input_.top_keywords or [])[:12],
+            "top_topics": (input_.top_topics or [])[:12],
             "top_features": (input_.top_features or [])[:12],
             "competitor": (input_.competitor or [])[:12],
             "post_excerpts": self._post_excerpts(input_.posts or {}, limit_each=3, max_chars=220),
@@ -263,19 +263,62 @@ class ReportGenerationService:
         if not isinstance(blocks, dict):
             return summary, content_md
 
-        new_summary = str(blocks.get("summary") or "").strip()
-        exec_md = str(blocks.get("executive_summary_md") or "").strip()
-        strat_md = str(blocks.get("strategy_suggestions_md") or "").strip()
+        new_summary = self._to_text(blocks.get("summary")).strip()
+        exec_md = self._normalize_md_bullets(blocks.get("executive_summary_md")).strip()
+        strat_md = self._normalize_md_bullets(blocks.get("strategy_suggestions_md")).strip()
 
         merged_summary = new_summary or summary
         merged_md = str(content_md or "")
 
         if exec_md:
-            merged_md = self._insert_under_heading(merged_md, "## Executive Summary", "### AI Additions", exec_md)
+            merged_md = self._insert_under_heading(merged_md, "## 执行摘要", "### AI 补充", exec_md)
         if strat_md:
-            merged_md = self._insert_under_heading(merged_md, "## Strategy Suggestions", "### AI Additions", strat_md)
+            merged_md = self._insert_under_heading(merged_md, "## 策略建议", "### AI 补充", strat_md)
 
         return merged_summary, merged_md
+
+    def _to_text(self, value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, (str, int, float, bool)):
+            return str(value)
+        # Avoid dumping large structures into report body.
+        try:
+            import json
+
+            return json.dumps(value, ensure_ascii=False)
+        except Exception:
+            return str(value)
+
+    def _normalize_md_bullets(self, value: Any) -> str:
+        """
+        Normalize LLM block values into a markdown bullet-list string.
+
+        Why:
+        - Some providers/models may return arrays for bullet blocks.
+        - Converting arrays with `str()` would render as Python/JSON list (e.g. "['- ...']"),
+          which looks broken in the report.
+        """
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            lines: list[str] = []
+            for it in value:
+                s = self._to_text(it).strip()
+                if not s:
+                    continue
+                # Ensure each line starts with "- "
+                if s.startswith("- "):
+                    lines.append(s)
+                elif s.startswith("-"):
+                    lines.append("- " + s.lstrip("-").strip())
+                else:
+                    lines.append("- " + s)
+            return "\n".join(lines)
+        # Fallback: stringify unknown types, but try to keep it single-line.
+        return self._to_text(value)
 
     def _insert_under_heading(self, md: str, heading: str, subheading: str, block_md: str) -> str:
         """

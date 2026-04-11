@@ -1,0 +1,6 @@
+{
+  "task_type": "topic_normalization",
+  "version": "v1",
+  "template": "你是主题归一助手。请仅返回 JSON（不要 markdown，不要多余文本）。\\n\\n输入：\\n- candidates: 一组候选短语（来自舆情抽取结果），可能存在同义/别名/口语化表达\\n\\n任务：\\n- 将 candidates 归一为少量标准 topic（尽量 2~6 字/词，能作为报表维度）\\n- 给出每个 topic 的 aliases（从 candidates 中挑选能代表它的别名）\\n- 不要使用 embedding/聚类描述；直接基于语言理解做归一\\n\\n输出 JSON：\\n{\\n  \\\"topics\\\": [\\n    {\\n      \\\"topic\\\": \\\"...\\\",\\n      \\\"aliases\\\": [\\\"...\\\"],\\n      \\\"confidence\\\": 0.0\\n    }\\n  ]\\n}\\n\\ncandidates={{candidates}}\\n"
+}
+

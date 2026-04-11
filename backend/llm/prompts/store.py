@@ -40,7 +40,8 @@ class PromptStore:
             pt = PromptTemplate(task_type=t, version="v0", template="{{input_json}}")
             self._cache[t] = pt
             return pt
-        data = json.loads(path.read_text(encoding="utf-8"))
+        # Some editors/PowerShell may save JSON with an UTF-8 BOM. `utf-8-sig` transparently strips it.
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
         pt = PromptTemplate(
             task_type=str(data.get("task_type") or t),
             version=str(data.get("version") or "v1"),
@@ -90,4 +91,3 @@ def render_prompt(template: str, variables: dict[str, Any]) -> str:
             break
         out = out[:start] + "" + out[end + 2 :]
     return out
-

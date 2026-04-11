@@ -15,10 +15,9 @@
 1. `cd frontend`
 2. `npm install`
 3. `npm run dev`
-### 数据库planA
-平台：Supabase
-Project name：ProdWatch
-Database password:ZM126.com123
+### 数据库
+SQLite
+
 
 
 

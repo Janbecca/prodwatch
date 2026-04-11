@@ -79,6 +79,7 @@
 import { ElMessage } from 'element-plus'
 import { computed, reactive, ref, watch } from 'vue'
 import { useProjectsStore } from '../stores/projects'
+import { useRefreshStore } from '../stores/refresh'
 
 
 import ProjectBasicInfo from '../components/project-config/ProjectBasicInfo.vue'
@@ -93,6 +94,7 @@ import { fetchBrands, fetchPlatforms } from '../api/meta'
 import { createProject, deleteProject, setProjectActivation, updateProject } from '../api/projectMutations'
 
 const projectsStore = useProjectsStore()
+const refreshStore = useRefreshStore()
 const hasProjects = computed(() => projectsStore.projects.length > 0)
 const projectModel = computed({
   get: () => projectsStore.activeProjectId,
@@ -111,6 +113,7 @@ const platformOptions = ref([])
 
 const mode = ref('view') // view | edit | create
 const canEdit = computed(() => !!project.value && String(project.value.status || '') === 'inactive')
+const isRefreshing = computed(() => refreshStore.isRefreshing(project.value?.id))
 
 let currentController = null
 
@@ -241,12 +244,20 @@ function resetEditModelForCreate() {
 }
 
 async function enterCreate() {
+  if (isRefreshing.value) {
+    ElMessage.warning('项目正在刷新中，请稍后再新建/编辑配置')
+    return
+  }
   await loadMetaOptions()
   mode.value = 'create'
   resetEditModelForCreate()
 }
 
 async function enterEdit() {
+  if (isRefreshing.value) {
+    ElMessage.warning('项目正在刷新中，请稍后再新建/编辑配置')
+    return
+  }
   if (!canEdit.value) {
     ElMessage.warning('仅允许对“停用状态(inactive)项目”进行编辑')
     return
@@ -281,6 +292,10 @@ function payloadFromEditModel() {
 }
 
 async function save() {
+  if (isRefreshing.value) {
+    ElMessage.warning('项目正在刷新中，请稍后再保存配置')
+    return
+  }
   error.value = ''
   try {
     await editFormRef.value.validate()
@@ -326,6 +341,10 @@ async function save() {
 
 async function toggleActive() {
   if (!project.value) return
+  if (isRefreshing.value) {
+    ElMessage.warning('项目正在刷新中，请稍后再启用/停用项目')
+    return
+  }
   loading.value = true
   error.value = ''
   try {
@@ -345,6 +364,10 @@ async function toggleActive() {
 
 async function remove() {
   if (!project.value) return
+  if (isRefreshing.value) {
+    ElMessage.warning('项目正在刷新中，请稍后再删除项目')
+    return
+  }
   loading.value = true
   error.value = ''
   try {

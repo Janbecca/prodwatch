@@ -58,7 +58,9 @@
       <el-form-item>
         <el-button type="primary" :loading="store.loading" @click="store.runQuery()">查询</el-button>
         <el-button :disabled="store.loading" @click="store.resetDraft()">重置</el-button>
-        <el-button type="success" @click="emit('open-create')">新建</el-button>
+        <el-tooltip :disabled="!isRefreshing" content="项目正在刷新中，请稍后再新建报告" placement="top">
+          <el-button type="success" :disabled="isRefreshing" @click="emit('open-create')">新建</el-button>
+        </el-tooltip>
       </el-form-item>
     </el-form>
   </PageSection>
@@ -69,11 +71,13 @@ import { computed, watch } from 'vue'
 import PageSection from '../common/PageSection.vue'
 import { useProjectsStore } from '../../stores/projects'
 import { useReportsStore } from '../../stores/reports'
+import { useRefreshStore } from '../../stores/refresh'
 
 const emit = defineEmits(['open-create'])
 
 const projectsStore = useProjectsStore()
 const store = useReportsStore()
+const refreshStore = useRefreshStore()
 
 const enabledProjects = computed(() => {
   return (projectsStore.projects || []).filter((p) => Number(p?.is_active || 0) === 1)
@@ -103,4 +107,5 @@ watch(
 )
 
 const projectModel = computed(() => store.draft.projectId)
+const isRefreshing = computed(() => refreshStore.isRefreshing(store.draft.projectId))
 </script>

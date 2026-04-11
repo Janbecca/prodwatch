@@ -60,7 +60,7 @@
         </el-select>
       </el-form-item>
 
-      <el-form-item label="关键词">
+      <el-form-item label="关键词命中">
         <el-select
           v-model="store.draft.keywords"
           multiple

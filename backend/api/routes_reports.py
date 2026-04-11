@@ -348,19 +348,27 @@ def create_report(req: CreateReportRequest, db: sqlite3.Connection = Depends(get
     # Avoid creating/generating reports while a refresh is running.
     # Reason: refresh is a long write-heavy operation; SQLite allows only one writer at a time,
     # which would cause report creation to hit "database is locked/busy" and return 503.
+    #
+    # Important: use RefreshService guard which also performs stale-running auto-recovery,
+    # instead of blindly trusting crawl_job.status='running' forever.
     try:
         svc = get_refresh_service()
         if svc.is_running_in_memory(int(req.project_id)):
             raise HTTPException(status_code=409, detail="项目正在刷新中，请稍后再新建报告。")
-        row = db.execute(
-            "SELECT id FROM crawl_job WHERE project_id=? AND status='running' ORDER BY id DESC LIMIT 1;",
-            (int(req.project_id),),
-        ).fetchone()
-        if row is not None:
-            raise HTTPException(
-                status_code=409,
-                detail=f"项目正在刷新中（任务编号={int(row['id'])}），请稍后再新建报告。",
-            )
+        with db:
+            job_id = svc.get_recent_running_job_id(db, int(req.project_id))
+            if job_id is not None:
+                started_at = None
+                try:
+                    row = db.execute("SELECT started_at FROM crawl_job WHERE id=? LIMIT 1;", (int(job_id),)).fetchone()
+                    started_at = (row["started_at"] if row is not None else None)
+                except Exception:
+                    started_at = None
+                msg = f"项目正在刷新中（任务编号={int(job_id)}"
+                if started_at:
+                    msg += f"，开始时间={started_at}"
+                msg += "），请稍后再新建报告。"
+                raise HTTPException(status_code=409, detail=msg)
     except HTTPException:
         raise
     except Exception:

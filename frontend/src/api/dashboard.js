@@ -69,6 +69,34 @@ export async function fetchDashboardKeywordMonitorStacked(
   return await getJSON(`/api/dashboard/keyword_monitor_stacked?${qs}`, { retries: 2, ...options })
 }
 
+export async function fetchDashboardTopicMonitorStacked(
+  { projectId, startDate, endDate, platformIds, brandIds, topN = 15 },
+  options = {}
+) {
+  const qs = buildQuery({
+    projectId,
+    startDate,
+    endDate,
+    platformIds,
+    brandIds,
+    extra: { top_n: topN },
+  })
+  const res = await getJSON(`/api/dashboard/topic_monitor_stacked?${qs}`, { retries: 2, ...options })
+  // Backend returns [{topic,data}], but chart expects [{keyword,data}].
+  const dates = Array.isArray(res?.dates) ? res.dates : []
+  const seriesRaw = Array.isArray(res?.series) ? res.series : []
+  return {
+    ...res,
+    dates,
+    series: seriesRaw
+      .map((it) => ({
+        keyword: String(it?.topic ?? '').trim(),
+        data: Array.isArray(it?.data) ? it.data : [],
+      }))
+      .filter((it) => it.keyword),
+  }
+}
+
 export async function fetchDashboardFeatureMonitorStacked(
   { projectId, startDate, endDate, brandIds, topN = 15 },
   options = {}

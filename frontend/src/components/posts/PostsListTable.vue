@@ -24,13 +24,20 @@
           <div class="summary">
             <div class="summary__title" v-if="row.title">{{ row.title }}</div>
             <div class="summary__content">{{ row.summary }}</div>
+            <div v-if="row.analysisTags.length" class="summary__tags">
+              <el-space wrap size="small">
+                <el-tag v-for="t in row.analysisTags" :key="t.key" :type="t.type" size="small">
+                  {{ t.text }}
+                </el-tag>
+              </el-space>
+            </div>
           </div>
         </template>
       </el-table-column>
       <el-table-column prop="platformName" label="平台" width="110" />
       <el-table-column prop="brandName" label="品牌" width="140" />
       <el-table-column prop="publishTime" label="发布时间" width="150" />
-      <el-table-column label="关键词" min-width="200">
+      <el-table-column label="关键词命中" min-width="200">
         <template #default="{ row }">
           <el-space wrap>
             <el-tag v-for="k in row.keywords" :key="k" size="small">{{ k }}</el-tag>
@@ -93,6 +100,22 @@ function uniqStrings(arr) {
   return out
 }
 
+function takeTextList(v, limit = 6) {
+  const out = []
+  if (Array.isArray(v)) {
+    for (const it of v) {
+      if (it == null) continue
+      if (typeof it === 'string') out.push(it)
+      else if (typeof it === 'object') {
+        if (it.text) out.push(String(it.text))
+        else if (it.topic) out.push(String(it.topic))
+        else if (it.name) out.push(String(it.name))
+      }
+    }
+  }
+  return uniqStrings(out).slice(0, limit)
+}
+
 function truncate(s, n = 120) {
   const t = trimText(s)
   if (t.length <= n) return t
@@ -136,6 +159,15 @@ const tableRows = computed(() => {
     const id = Number(it?.id)
     const platformId = Number(it?.platform_id)
     const brandId = Number(it?.brand_id)
+
+    const topics = takeTextList(it?.topics || it?.analysis_result?.topics, 4)
+    const entities = takeTextList(it?.entities || it?.analysis_result?.entities, 3)
+    const issues = takeTextList(it?.issues || it?.analysis_result?.issues, 3)
+
+    const analysisTags = []
+    for (const tp of topics) analysisTags.push({ key: `t:${tp}`, type: 'success', text: `话题: ${tp}` })
+    for (const en of entities) analysisTags.push({ key: `e:${en}`, type: 'info', text: `实体: ${en}` })
+    for (const is of issues) analysisTags.push({ key: `i:${is}`, type: 'warning', text: `问题: ${is}` })
     return {
       raw: it,
       id,
@@ -145,6 +177,7 @@ const tableRows = computed(() => {
       brandName: brandNameById.value[brandId] || `#${brandId || '-'}`,
       publishTime: it?.publish_time ? String(it.publish_time).slice(0, 16).replace('T', ' ') : '-',
       keywords: uniqStrings(Array.isArray(it?.keywords) ? it.keywords : []).slice(0, 6),
+      analysisTags: analysisTags.slice(0, 8),
       likeCount: Number(it?.like_count || 0),
       commentCount: Number(it?.comment_count || 0),
       shareCount: Number(it?.share_count || 0),
@@ -170,5 +203,8 @@ function onRowClick(row) {
 }
 .summary__content {
   color: var(--el-text-color-regular);
+}
+.summary__tags {
+  margin-top: 6px;
 }
 </style>

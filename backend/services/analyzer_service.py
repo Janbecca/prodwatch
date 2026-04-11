@@ -78,6 +78,49 @@ class SpamResult:
     model_version: str
 
 
+@dataclass(frozen=True)
+class EntityHit:
+    text: str
+    entity_type: str  # brand|product|org|person|other
+    normalized: Optional[str]
+    confidence: float
+
+
+@dataclass(frozen=True)
+class ScenarioHit:
+    text: str
+    normalized: Optional[str]
+    confidence: float
+
+
+@dataclass(frozen=True)
+class IssueHit:
+    text: str
+    normalized: Optional[str]
+    severity: Optional[str]  # low|medium|high
+    confidence: float
+
+
+@dataclass(frozen=True)
+class SentimentTargetHit:
+    target: str
+    sentiment: str  # positive|neutral|negative
+    confidence: float
+
+
+@dataclass(frozen=True)
+class RawKeywordHit:
+    text: str
+    confidence: float
+
+
+@dataclass(frozen=True)
+class TopicHit:
+    topic: str
+    aliases: list[str]
+    confidence: float
+
+
 class AnalyzerService:
     """
     Analyzer abstraction.
@@ -261,6 +304,64 @@ def _norm_spam_label(value: object) -> str:
     return "normal"
 
 
+def _norm_entity_type(value: object) -> str:
+    s = str(value or "").strip().lower()
+    if s in {"brand", "product", "org", "person", "other"}:
+        return s
+    return "other"
+
+
+def _norm_severity(value: object) -> Optional[str]:
+    s = str(value or "").strip().lower()
+    if s in {"low", "medium", "high"}:
+        return s
+    return None
+
+
+def _normalize_topic_text(text: str) -> str:
+    """
+    Best-effort topic normalization without external dependencies.
+
+    Goals:
+    - stable string for aggregation (daily_keyword_metric)
+    - tolerate mixed casing / extra spaces / common punctuation
+    """
+    s = str(text or "").strip()
+    if not s:
+        return ""
+    s = s.replace("\u3000", " ").strip()
+    parts = [p for p in s.split(" ") if p]
+    s = " ".join(parts)
+    s = s.strip("，。！？!?,.;；、】【（）()[]{}<>《》\"'“”‘’")
+    if not s:
+        return ""
+
+    try:
+        ascii_ratio = sum(1 for ch in s if ord(ch) < 128) / max(1, len(s))
+        if ascii_ratio >= 0.6:
+            s = s.lower()
+    except Exception:
+        pass
+
+    synonyms = {
+        "续航": "电池续航",
+        "电量": "电池续航",
+        "耗电": "电池续航",
+        "拍照": "相机拍照",
+        "摄像": "相机拍照",
+        "相机": "相机拍照",
+        "卡顿": "性能卡顿",
+        "掉帧": "性能卡顿",
+        "发热": "发热",
+        "过热": "发热",
+        "价格": "价格",
+        "性价比": "价格",
+        "售后": "售后服务",
+        "客服": "售后服务",
+    }
+    return synonyms.get(s, s)
+
+
 class PostAnalysisAnalyzerService(AnalyzerService):
     """
     Token-saving analyzer: call LLM only once per post via task_type=post_analysis,
@@ -290,29 +391,10 @@ class PostAnalysisAnalyzerService(AnalyzerService):
             return self._cache[pid]
 
         text = post.text or ""
-        text_l = text.lower()
-
-        # Token-saving: only send keywords that appear in text (fast exact contains).
-        kw_payload = []
-        for kw in self.project_keywords:
-            k = str(kw.keyword or "").strip()
-            if not k:
-                continue
-            try:
-                hit = k.lower() in text_l
-            except Exception:
-                hit = k in text
-            if not hit:
-                continue
-            kw_payload.append({"keyword": k, "keyword_type": kw.keyword_type})
-            if len(kw_payload) >= 60:
-                break
-
-        payload = {
-            "text": text,
-            "project_keywords": kw_payload,
-            "feature_terms": list(self._feature_terms or [])[:20],
-        }
+        # IMPORTANT:
+        # - This task must do open extraction without relying on project_keywords as candidates.
+        # - Monitoring keyword hits are handled separately via deterministic rules.
+        payload = {"text": text}
 
         res = get_llm_router().run(task_type="post_analysis", input=payload, con=self.con)
         out = res.output if isinstance(res.output, dict) else {}
@@ -347,6 +429,11 @@ class PostAnalysisAnalyzerService(AnalyzerService):
 
     def extract_keywords(self, post: PostInput, project_keywords: Sequence[ProjectKeyword]) -> List[KeywordHit]:
         data = self._call_post_analysis(post)
+        # Compatibility note:
+        # - Legacy prompt/provider may return `keywords` or `keyword_hits`
+        # - New post_analysis schema returns `raw_keywords` (string array)
+        # This method remains for backward compatibility with older code paths.
+
         items = data.get("keywords")
         if not isinstance(items, list):
             items = data.get("keyword_hits")
@@ -354,22 +441,56 @@ class PostAnalysisAnalyzerService(AnalyzerService):
             items = []
 
         hits: List[KeywordHit] = []
-        for it in items:
-            if not isinstance(it, dict):
-                continue
-            kw = str(it.get("keyword") or "").strip()
-            if not kw:
-                continue
+        seen = set()
+
+        def add_hit(*, kw: str, kw_type: object, conf: object, src: object) -> None:
+            k = str(kw or "").strip()
+            if not k:
+                return
+            kt = kw_type
+            key = (k, str(kt or ""))
+            if key in seen:
+                return
+            seen.add(key)
             hits.append(
                 KeywordHit(
-                    keyword=kw,
-                    keyword_type=it.get("keyword_type"),
-                    confidence=_clamp(_safe_float(it.get("confidence"), 0.8), 0.0, 1.0),
-                    source=str(it.get("source") or "llm"),
+                    keyword=k,
+                    keyword_type=kt,
+                    confidence=_clamp(_safe_float(conf, 0.7), 0.0, 1.0),
+                    source=str(src or "llm"),
                 )
             )
+
+        for it in items:
+            # old format may be list[str] or list[dict]
+            if isinstance(it, str):
+                add_hit(kw=it, kw_type=None, conf=0.7, src="llm")
+            elif isinstance(it, dict):
+                add_hit(
+                    kw=str(it.get("keyword") or it.get("text") or ""),
+                    kw_type=it.get("keyword_type"),
+                    conf=it.get("confidence"),
+                    src=it.get("source") or "llm",
+                )
             if len(hits) >= 80:
                 break
+
+        # New schema: raw_keywords: ["..."]
+        if not hits:
+            rk = data.get("raw_keywords")
+            if isinstance(rk, list):
+                for it in rk:
+                    if isinstance(it, str):
+                        add_hit(kw=it, kw_type="raw", conf=0.6, src="llm")
+                    elif isinstance(it, dict):
+                        add_hit(
+                            kw=str(it.get("text") or it.get("keyword") or ""),
+                            kw_type=it.get("keyword_type") or "raw",
+                            conf=it.get("confidence") or 0.6,
+                            src=it.get("source") or "llm",
+                        )
+                    if len(hits) >= 80:
+                        break
 
         if hits:
             return hits

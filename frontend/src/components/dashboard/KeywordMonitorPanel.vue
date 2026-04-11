@@ -1,7 +1,7 @@
 <!-- 作用：前端组件：仪表盘模块组件（KeywordMonitorPanel）。 -->
 
 <template>
-  <PageSection title="关键词监控">
+  <PageSection title="热点话题">
     <template #extra>
       <el-input-number v-model="topN" :min="5" :max="50" size="small" controls-position="right" />
     </template>
@@ -32,7 +32,7 @@ import KeywordStackedBarChart from '../charts/KeywordStackedBarChart.vue'
 
 import { useDashboardStore } from '../../stores/dashboard'
 import { resolveDateRange } from '../../utils/date'
-import { fetchDashboardKeywordMonitorStacked } from '../../api/dashboard'
+import { fetchDashboardTopicMonitorStacked } from '../../api/dashboard'
 
 const dashboard = useDashboardStore()
 
@@ -87,7 +87,7 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const res = await fetchDashboardKeywordMonitorStacked(
+    const res = await fetchDashboardTopicMonitorStacked(
       {
         projectId: pid,
         startDate: dr.startDate,

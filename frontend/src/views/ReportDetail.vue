@@ -92,7 +92,14 @@
         />
       </PageSection>
 
-      <PageSection title="关键词分析">
+      <PageSection title="话题分析">
+        <el-skeleton v-if="aggLoading" :rows="2" animated />
+        <el-alert v-else-if="aggError" type="error" :title="aggError" :closable="false" show-icon />
+        <el-empty v-else-if="!topicDates.length" description="暂无数据" />
+        <KeywordStackedBarChart v-else :height="'320px'" :dates="topicDates" :series="topicSeries" />
+      </PageSection>
+
+      <PageSection title="关键词命中分析">
         <el-skeleton v-if="aggLoading" :rows="2" animated />
         <el-alert v-else-if="aggError" type="error" :title="aggError" :closable="false" show-icon />
         <el-empty v-else-if="!kwDates.length" description="暂无数据" />
@@ -140,6 +147,7 @@ import {
   fetchDashboardKeywordMonitorStacked,
   fetchDashboardOverviewByBrand,
   fetchDashboardSentimentTrendDailyByBrand,
+  fetchDashboardTopicMonitorStacked,
 } from '../api/dashboard'
 import { useProjectsStore } from '../stores/projects'
 
@@ -161,6 +169,8 @@ const trendDates = ref([])
 const trendSeries = ref([])
 const kwDates = ref([])
 const kwSeries = ref([])
+const topicDates = ref([])
+const topicSeries = ref([])
 const featDates = ref([])
 const featSeries = ref([]) // [{feature,data}]
 
@@ -342,15 +352,18 @@ async function loadAggregates() {
   aggLoading.value = true
   aggError.value = ''
   try {
-    const [ov, tr, kw, feat] = await Promise.all([
+    const [ov, tr, tp, kw, feat] = await Promise.all([
       fetchDashboardOverviewByBrand({ projectId: pid, startDate, endDate, platformIds, brandIds }, { signal: aggAc.signal }),
       fetchDashboardSentimentTrendDailyByBrand({ projectId: pid, startDate, endDate, platformIds, brandIds, topN: 4 }, { signal: aggAc.signal }),
+      fetchDashboardTopicMonitorStacked({ projectId: pid, startDate, endDate, platformIds, brandIds, topN: 15 }, { signal: aggAc.signal }),
       fetchDashboardKeywordMonitorStacked({ projectId: pid, startDate, endDate, platformIds, brandIds, topN: 15 }, { signal: aggAc.signal }),
       fetchDashboardFeatureMonitorStacked({ projectId: pid, startDate, endDate, brandIds, topN: 15 }, { signal: aggAc.signal }),
     ])
     overviewItems.value = Array.isArray(ov?.items) ? ov.items : []
     trendDates.value = Array.isArray(tr?.dates) ? tr.dates : []
     trendSeries.value = Array.isArray(tr?.series) ? tr.series : []
+    topicDates.value = Array.isArray(tp?.dates) ? tp.dates : []
+    topicSeries.value = Array.isArray(tp?.series) ? tp.series : []
     kwDates.value = Array.isArray(kw?.dates) ? kw.dates : []
     kwSeries.value = Array.isArray(kw?.series) ? kw.series : []
     featDates.value = Array.isArray(feat?.dates) ? feat.dates : []
@@ -361,6 +374,8 @@ async function loadAggregates() {
     overviewItems.value = []
     trendDates.value = []
     trendSeries.value = []
+    topicDates.value = []
+    topicSeries.value = []
     kwDates.value = []
     kwSeries.value = []
     featDates.value = []

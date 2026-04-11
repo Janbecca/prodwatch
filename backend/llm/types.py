@@ -14,8 +14,6 @@ class LLMTaskConfig:
     task_type: str
     provider: str
     model: Optional[str] = None
-    fallback_provider: str = "mock"
-    fallback_model: Optional[str] = None
 
 
 @dataclass(frozen=True)

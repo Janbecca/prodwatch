@@ -56,8 +56,9 @@ def validate_scope(payload: ProjectPayload) -> None:
         raise HTTPException(status_code=400, detail="brand_ids must have at least 1 item")
     if not payload.platform_ids:
         raise HTTPException(status_code=400, detail="platform_ids must have at least 1 item")
-    if not payload.keywords:
-        raise HTTPException(status_code=400, detail="keywords must have at least 1 item")
+    # Keywords are optional:
+    # - monitoring keywords: user-defined (optional)
+    # - open semantic extraction: does not rely on preconfigured keywords
 
 
 def _project_exists(db: sqlite3.Connection, project_id: int) -> sqlite3.Row:

@@ -39,8 +39,6 @@ def _ensure_llm_task_config_table(con: sqlite3.Connection) -> None:
           task_type TEXT PRIMARY KEY,
           provider TEXT NOT NULL,
           model TEXT,
-          fallback_provider TEXT NOT NULL DEFAULT 'mock',
-          fallback_model TEXT,
           updated_at DATETIME
         );
         """
@@ -54,7 +52,6 @@ def _models_by_provider() -> dict[str, list[str]]:
     实际运行时的默认值仍可通过各提供商（Provider）中的环境变量进行覆盖。
     """
     return {
-        "mock": ["mock-v1"],
         "deepseek": ["deepseek-chat", "deepseek-reasoner"],
         "qwen": ["qwen-turbo", "qwen-plus", "qwen-max"],
     }
@@ -62,28 +59,22 @@ def _models_by_provider() -> dict[str, list[str]]:
 
 def _cheap_defaults() -> dict[str, dict[str, Any]]:
     """
-    Default cost-saving plan.
-    - crawler_generation: prefer mock to avoid paid calls for simulated crawling
-    - post_analysis/report_generation: use a cheap general chat model + mock fallback
+    Default (single-model) plan.
+
+    Note: This project does not support fallback_provider/fallback_model.
     """
     return {
         "crawler_generation": {
-            "provider": "mock",
-            "model": "mock-v1",
-            "fallback_provider": "mock",
-            "fallback_model": "mock-v1",
+            "provider": "deepseek",
+            "model": "deepseek-chat",
         },
         "post_analysis": {
             "provider": "deepseek",
             "model": "deepseek-chat",
-            "fallback_provider": "mock",
-            "fallback_model": "mock-v1",
         },
         "report_generation": {
             "provider": "deepseek",
             "model": "deepseek-chat",
-            "fallback_provider": "mock",
-            "fallback_model": "mock-v1",
         },
     }
 
@@ -101,8 +92,6 @@ def _effective_configs(con: sqlite3.Connection) -> list[dict[str, Any]]:
                 "config": {
                     "provider": cfg.provider,
                     "model": cfg.model,
-                    "fallback_provider": cfg.fallback_provider,
-                    "fallback_model": cfg.fallback_model,
                 },
             }
         )
@@ -113,8 +102,6 @@ class LLMTaskConfigDTO(BaseModel):
     task_type: str = Field(..., min_length=1)
     provider: str = Field(..., min_length=1)
     model: Optional[str] = None
-    fallback_provider: str = Field(default="mock", min_length=1)
-    fallback_model: Optional[str] = None
 
 
 class PutLLMConfigRequest(BaseModel):
@@ -169,16 +156,11 @@ def put_config(payload: PutLLMConfigRequest, db: sqlite3.Connection = Depends(ge
             raise HTTPException(status_code=400, detail=f"unknown task_type: {task_type}")
 
         provider = str(item.provider).strip().lower()
-        fb_provider = str(item.fallback_provider).strip().lower()
         if provider not in allowed_providers:
             raise HTTPException(status_code=400, detail=f"unknown provider: {provider}")
-        if fb_provider not in allowed_providers:
-            raise HTTPException(status_code=400, detail=f"unknown fallback_provider: {fb_provider}")
 
         model = (str(item.model).strip() if item.model is not None else "")
         model = None if model == "" else model
-        fb_model = (str(item.fallback_model).strip() if item.fallback_model is not None else "")
-        fb_model = None if fb_model == "" else fb_model
 
         # Do not hard-fail on model names: the UI has a conservative dropdown list,
         # but real providers may support more models and users may type custom names.
@@ -189,8 +171,6 @@ def put_config(payload: PutLLMConfigRequest, db: sqlite3.Connection = Depends(ge
                 task_type=task_type,
                 provider=provider,
                 model=model,
-                fallback_provider=fb_provider,
-                fallback_model=fb_model,
             ),
         )
 

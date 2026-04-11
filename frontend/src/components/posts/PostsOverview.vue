@@ -44,7 +44,8 @@ const cards = computed(() => {
     { key: 'valid', label: '有效帖子数', value: fmt(o.valid_count) },
     { key: 'negative', label: '负向帖子数', value: fmt(o.negative_count) },
     { key: 'spam', label: '垃圾帖子数', value: fmt(o.spam_count) },
-    { key: 'kw', label: '热门关键词数', value: fmt(o.hot_keyword_count) },
+    { key: 'kw', label: '关键词命中数', value: fmt(o.hot_keyword_count) },
+    { key: 'topic', label: '热点话题数', value: fmt(o.hot_topic_count) },
   ]
 })
 </script>

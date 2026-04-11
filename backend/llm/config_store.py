@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from dataclasses import asdict
 from typing import Any, Optional
 
 from backend.llm.types import LLMTaskConfig
@@ -21,9 +20,53 @@ DEFAULT_TASKS = [
     "report_generation",
 ]
 
-# 默认配置：所有任务默认使用 Mock 提供者和模型，确保系统在没有外部配置时仍能正常运行。
+DEFAULT_PROVIDER = "deepseek"
+DEFAULT_MODEL_BY_PROVIDER: dict[str, str] = {
+    "deepseek": "deepseek-chat",
+    "qwen": "qwen-plus",
+}
+
+
+def _normalize_provider(name: object) -> str:
+    """
+    Normalize provider names.
+
+    Compatibility: older DBs/configs may still contain "mock". Treat it as unset.
+    """
+    v = str(name or "").strip().lower()
+    if not v or v == "mock":
+        return DEFAULT_PROVIDER
+    return v
+
+
+def _default_model(provider: str) -> str | None:
+    p = _normalize_provider(provider)
+    return DEFAULT_MODEL_BY_PROVIDER.get(p)
+
+def _normalize_model(provider: str, model: object) -> str | None:
+    """
+    Normalize model names.
+
+    Compatibility: older configs might have leftover mock model names like "mock-v1".
+    When provider is real (deepseek/qwen), treat "mock*" as unset so we fall back to the
+    provider default model.
+    """
+    v = str(model or "").strip()
+    if not v:
+        return None
+    if v.lower().startswith("mock"):
+        return None
+    return v
+
+
+# 默认配置：所有任务默认使用真实 LLM 提供者，避免 mock 兜底逻辑。
 def default_config(task_type: str) -> LLMTaskConfig:
-    return LLMTaskConfig(task_type=str(task_type), provider="mock", model="mock-v1", fallback_provider="mock", fallback_model="mock-v1")
+    provider = DEFAULT_PROVIDER
+    return LLMTaskConfig(
+        task_type=str(task_type),
+        provider=provider,
+        model=_default_model(provider),
+    )
 
 # 从环境变量读取 JSON 配置，支持覆盖默认配置。环境变量格式示例：
 def _env_json_config() -> dict[str, Any]:
@@ -61,7 +104,7 @@ class LLMConfigStore:
         if con is not None and _db_has_table(con, "llm_task_config"):
             row = con.execute(
                 """
-                SELECT task_type, provider, model, fallback_provider, fallback_model
+                SELECT task_type, provider, model
                 FROM llm_task_config
                 WHERE task_type=?
                 LIMIT 1;
@@ -69,12 +112,11 @@ class LLMConfigStore:
                 (task,),
             ).fetchone()
             if row is not None:
+                provider = _normalize_provider(row["provider"])
                 return LLMTaskConfig(
                     task_type=task,
-                    provider=str(row["provider"] or "mock"),
-                    model=row["model"],
-                    fallback_provider=str(row["fallback_provider"] or "mock"),
-                    fallback_model=row["fallback_model"],
+                    provider=provider,
+                    model=_normalize_model(provider, row["model"]) or _default_model(provider),
                 )
 
         # File override (PRODWATCH_LLM_CONFIG_PATH)
@@ -85,24 +127,22 @@ class LLMConfigStore:
             if isinstance(llm_tasks, dict):
                 cfg = llm_tasks.get(task)
                 if isinstance(cfg, dict):
+                    provider = _normalize_provider(cfg.get("provider"))
                     return LLMTaskConfig(
                         task_type=task,
-                        provider=str(cfg.get("provider") or "mock"),
-                        model=cfg.get("model"),
-                        fallback_provider=str(cfg.get("fallback_provider") or "mock"),
-                        fallback_model=cfg.get("fallback_model"),
+                        provider=provider,
+                        model=_normalize_model(provider, cfg.get("model")) or _default_model(provider),
                     )
 
         # Env override
         env = _env_json_config()
         cfg = env.get(task)
         if isinstance(cfg, dict):
+            provider = _normalize_provider(cfg.get("provider"))
             return LLMTaskConfig(
                 task_type=task,
-                provider=str(cfg.get("provider") or "mock"),
-                model=cfg.get("model"),
-                fallback_provider=str(cfg.get("fallback_provider") or "mock"),
-                fallback_model=cfg.get("fallback_model"),
+                provider=provider,
+                model=_normalize_model(provider, cfg.get("model")) or _default_model(provider),
             )
 
         return default_config(task)
@@ -110,21 +150,17 @@ class LLMConfigStore:
     def upsert(self, con: sqlite3.Connection, cfg: LLMTaskConfig) -> None:
         con.execute(
             """
-            INSERT INTO llm_task_config(task_type, provider, model, fallback_provider, fallback_model, updated_at)
-            VALUES(?, ?, ?, ?, ?, datetime('now','localtime'))
+            INSERT INTO llm_task_config(task_type, provider, model, updated_at)
+            VALUES(?, ?, ?, datetime('now','localtime'))
             ON CONFLICT(task_type) DO UPDATE SET
               provider=excluded.provider,
               model=excluded.model,
-              fallback_provider=excluded.fallback_provider,
-              fallback_model=excluded.fallback_model,
               updated_at=datetime('now','localtime');
             """,
             (
                 cfg.task_type,
                 cfg.provider,
                 cfg.model,
-                cfg.fallback_provider,
-                cfg.fallback_model,
             ),
         )
 

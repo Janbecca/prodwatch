@@ -437,6 +437,128 @@ def dashboard_keyword_monitor_stacked(
     }
 
 
+@router.get("/topic_monitor_stacked")
+def dashboard_topic_monitor_stacked(
+    project_id: int = Query(...),
+    start_date: str = Query(...),
+    end_date: str = Query(...),
+    platform_ids: Optional[list[int]] = Query(None),
+    brand_ids: Optional[list[int]] = Query(None),
+    top_n: int = Query(15, ge=1, le=50),
+    db: sqlite3.Connection = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Stacked series of hot topics.
+
+    Data source priority:
+    1) daily_topic_metric (aggregated, derived from topic_result)
+    2) graceful empty when table missing (legacy DB)
+    """
+    try:
+        dr = parse_date_range(start_date, end_date)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    plat_sql, plat_params = in_filter("platform_id", platform_ids)
+    brand_sql, brand_params = in_filter("brand_id", brand_ids)
+    params_base = [project_id, dr.start_date, dr.end_date, *plat_params, *brand_params]
+
+    try:
+        top_rows = _fetchall_retry(
+            db,
+            f"""
+            SELECT topic, SUM(COALESCE(hit_count,0)) AS hit_count
+            FROM daily_topic_metric
+            WHERE project_id=?
+              AND stat_date BETWEEN ? AND ?
+              {plat_sql}
+              {brand_sql}
+            GROUP BY topic
+            ORDER BY hit_count DESC, topic ASC
+            LIMIT ?;
+            """,
+            (*params_base, int(top_n)),
+        )
+    except sqlite3.Error as e:
+        msg = str(e).lower()
+        if ("no such table" in msg and "daily_topic_metric" in msg) or ("no such column" in msg):
+            return {
+                "project_id": project_id,
+                "date_range": {"start_date": dr.start_date, "end_date": dr.end_date},
+                "filters": {"platform_ids": platform_ids, "brand_ids": brand_ids},
+                "dates": [],
+                "series": [],
+            }
+        if _is_locked_error(e):
+            raise HTTPException(status_code=503, detail=f"SQLite busy: {e}")
+        raise _sqlite_error(e)
+
+    topics = [str(r["topic"]) for r in top_rows if (r["topic"] or "").strip() != ""]
+    if not topics:
+        return {
+            "project_id": project_id,
+            "date_range": {"start_date": dr.start_date, "end_date": dr.end_date},
+            "filters": {"platform_ids": platform_ids, "brand_ids": brand_ids},
+            "dates": [],
+            "series": [],
+        }
+
+    t_sql, t_params = in_filter("topic", topics)
+    try:
+        rows = _fetchall_retry(
+            db,
+            f"""
+            SELECT stat_date, topic, SUM(COALESCE(hit_count,0)) AS hit_count
+            FROM daily_topic_metric
+            WHERE project_id=?
+              AND stat_date BETWEEN ? AND ?
+              {plat_sql}
+              {brand_sql}
+              {t_sql}
+            GROUP BY stat_date, topic
+            ORDER BY stat_date ASC, topic ASC;
+            """,
+            (*params_base, *t_params),
+        )
+    except sqlite3.Error as e:
+        msg = str(e).lower()
+        if ("no such table" in msg and "daily_topic_metric" in msg) or ("no such column" in msg):
+            return {
+                "project_id": project_id,
+                "date_range": {"start_date": dr.start_date, "end_date": dr.end_date},
+                "filters": {"platform_ids": platform_ids, "brand_ids": brand_ids},
+                "dates": [],
+                "series": [],
+            }
+        if _is_locked_error(e):
+            raise HTTPException(status_code=503, detail=f"SQLite busy: {e}")
+        raise _sqlite_error(e)
+
+    start_dt = datetime.strptime(dr.start_date, "%Y-%m-%d").date()
+    end_dt = datetime.strptime(dr.end_date, "%Y-%m-%d").date()
+    dates: list[str] = []
+    cur = start_dt
+    while cur <= end_dt:
+        dates.append(cur.strftime("%Y-%m-%d"))
+        cur += timedelta(days=1)
+
+    idx = {d: i for i, d in enumerate(dates)}
+    series_map: dict[str, list[int]] = {tp: [0] * len(dates) for tp in topics}
+    for r in rows:
+        d = str(r["stat_date"])
+        tp = str(r["topic"])
+        if tp in series_map and d in idx:
+            series_map[tp][idx[d]] = int(r["hit_count"] or 0)
+
+    return {
+        "project_id": project_id,
+        "date_range": {"start_date": dr.start_date, "end_date": dr.end_date},
+        "filters": {"platform_ids": platform_ids, "brand_ids": brand_ids},
+        "dates": dates,
+        "series": [{"topic": tp, "data": series_map[tp]} for tp in topics],
+    }
+
+
 @router.get("/feature_monitor_stacked")
 def dashboard_feature_monitor_stacked(
     project_id: int = Query(...),

@@ -53,34 +53,6 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="备选提供方" width="170">
-        <template #default="{ row }">
-          <el-select v-model="row.draft.fallback_provider" style="width: 150px" filterable>
-            <el-option v-for="p in providers" :key="p" :label="p" :value="p" />
-          </el-select>
-        </template>
-      </el-table-column>
-
-      <el-table-column label="备选模型" min-width="170">
-        <template #default="{ row }">
-          <el-select
-            v-model="row.draft.fallback_model"
-            style="width: 100%"
-            clearable
-            filterable
-            allow-create
-            default-first-option
-            placeholder="选择或输入备选模型（可留空）"
-          >
-            <el-option
-              v-for="m in modelsFor(row.draft.fallback_provider)"
-              :key="m"
-              :label="m"
-              :value="m"
-            />
-          </el-select>
-        </template>
-      </el-table-column>
 
       <el-table-column label="状态" width="140">
         <template #default="{ row }">
@@ -108,27 +80,19 @@ const cheapDefaults = ref({})
 const rows = ref([])
 
 let currentController = null
-const allowedProviders = new Set(['mock', 'deepseek', 'qwen'])
 
 function toDraft(effective) {
   return {
-    provider: String(effective?.provider || 'mock'),
+    provider: String(effective?.provider || ''),
     model: effective?.model == null ? null : String(effective.model),
-    fallback_provider: String(effective?.fallback_provider || 'mock'),
-    fallback_model: effective?.fallback_model == null ? null : String(effective.fallback_model),
   }
 }
 
 function normalizeDraft(draft, taskType) {
   return {
     task_type: String(taskType),
-    provider: String(draft.provider || 'mock'),
+    provider: String(draft.provider || ''),
     model: draft.model == null || String(draft.model).trim() === '' ? null : String(draft.model).trim(),
-    fallback_provider: String(draft.fallback_provider || 'mock'),
-    fallback_model:
-      draft.fallback_model == null || String(draft.fallback_model).trim() === ''
-        ? null
-        : String(draft.fallback_model).trim(),
   }
 }
 
@@ -149,15 +113,13 @@ async function load() {
       fetchLLMModels({ signal: currentController.signal }),
       fetchLLMConfig({ signal: currentController.signal }),
     ])
-    providers.value = (Array.isArray(modelsData?.providers) ? modelsData.providers : []).filter((p) =>
-      allowedProviders.has(String(p || '').toLowerCase())
-    )
+    providers.value = Array.isArray(modelsData?.providers) ? modelsData.providers : []
     modelsByProvider.value = modelsData?.models_by_provider || {}
     cheapDefaults.value = modelsData?.cheap_defaults || {}
 
     rows.value = (Array.isArray(cfg?.tasks) ? cfg.tasks : []).map((t) => {
       const c = t?.config || {}
-      const provider = String(c?.provider || 'mock')
+      const provider = String(c?.provider || '')
       const model = c?.model == null ? null : String(c.model)
       return {
         task_type: String(t?.task_type || ''),
@@ -195,10 +157,8 @@ async function restoreCheapDefaults() {
       const d = defs?.[r.task_type] || {}
       return {
         task_type: r.task_type,
-        provider: String(d?.provider || 'mock'),
+        provider: String(d?.provider || ''),
         model: d?.model == null ? null : String(d.model),
-        fallback_provider: String(d?.fallback_provider || 'mock'),
-        fallback_model: d?.fallback_model == null ? null : String(d.fallback_model),
       }
     })
     await putLLMConfig(items)

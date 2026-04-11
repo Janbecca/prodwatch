@@ -64,7 +64,7 @@
           <el-option v-for="b in safeBrandOptions" :key="b.id" :label="b.name || `#${b.id}`" :value="b.id" />
         </el-select>
       </el-form-item>
-      <el-form-item label="关键词">
+      <el-form-item label="关键词（命中线索）">
         <el-select v-model="form.keywords" multiple filterable collapse-tags collapse-tags-tooltip style="width: 100%">
           <el-option v-for="k in keywordOptions" :key="k" :label="k" :value="k" />
         </el-select>
@@ -84,9 +84,16 @@
       </el-form-item>
 
       <el-form-item>
-        <el-button type="primary" :loading="reportsStore.creating" :disabled="reportsStore.creating" @click="onCreate">
+        <el-tooltip :disabled="!isRefreshing" content="项目正在刷新中，请稍后操作" placement="top">
+          <el-button
+            type="primary"
+            :loading="reportsStore.creating"
+            :disabled="reportsStore.creating || isRefreshing"
+            @click="onCreate"
+          >
           创建
-        </el-button>
+          </el-button>
+        </el-tooltip>
         <el-button :disabled="reportsStore.creating" @click="open = false">关闭</el-button>
       </el-form-item>
     </el-form>
@@ -100,9 +107,11 @@ import { useProjectsStore } from '../../stores/projects'
 import { useReportsStore } from '../../stores/reports'
 import { fetchProjectConfig } from '../../api/projectConfig'
 import { fetchProjectRefreshStatus } from '../../api/projectRefresh'
+import { useRefreshStore } from '../../stores/refresh'
 
 const projectsStore = useProjectsStore()
 const reportsStore = useReportsStore()
+const refreshStore = useRefreshStore()
 
 function normalizeOptionList(items) {
   const out = []
@@ -168,6 +177,8 @@ const form = reactive({
   keywords: [],
   modules: ['sentiment', 'trend', 'topics', 'feature', 'spam', 'competitor', 'strategy'],
 })
+
+const isRefreshing = computed(() => refreshStore.isRefreshing(form.projectId))
 
 function uniqValidInts(arr) {
   const out = []
@@ -287,7 +298,13 @@ async function doCreate() {
   try {
     const st = await fetchProjectRefreshStatus(pid)
     if (st?.running) {
-      ElMessage.warning('项目正在刷新中，请稍后再新建报告')
+      refreshStore.startRefreshing(pid, { bannerAck: false })
+      const jobId = Number(st?.crawl_job_id)
+      const startedAt = st?.started_at ? String(st.started_at) : ''
+      const msg = Number.isFinite(jobId) && jobId > 0
+        ? `项目正在刷新中（任务编号=${jobId}${startedAt ? `，开始时间=${startedAt}` : ''}），请稍后再新建报告`
+        : '项目正在刷新中，请稍后再新建报告'
+      ElMessage.warning(msg)
       return
     }
   } catch {

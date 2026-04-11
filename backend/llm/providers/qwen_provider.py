@@ -11,8 +11,9 @@ from backend.llm.providers.openai_compat_client import OpenAICompatConfig, chat_
 
 class QwenProvider:
     """
-    Qwen 提供商存根。
-    目前有意将其保留为存根；若未进行配置，路由器将回退至 MockProvider。
+    Qwen 提供商（OpenAI-compatible Chat Completions）。
+
+    未配置 API Key 时会返回 ok=False，由上层决定是否重试/报错。
     """
     name = "qwen"
 
@@ -21,8 +22,10 @@ class QwenProvider:
         # DashScope OpenAI-compatible mode base URL
         base_url = os.environ.get("PRODWATCH_QWEN_BASE_URL") or os.environ.get("QWEN_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1"
         model = req.model or os.environ.get("PRODWATCH_QWEN_MODEL") or os.environ.get("QWEN_MODEL") or "qwen-plus"
-        timeout_s = float(os.environ.get("PRODWATCH_LLM_TIMEOUT_S") or "25")
-        max_retries = int(os.environ.get("PRODWATCH_LLM_MAX_RETRIES") or "2")
+        task_key = str(getattr(req, "task_type", "") or "").strip().upper()
+        timeout_default = "60" if str(getattr(req, "task_type", "") or "") == "crawler_generation" else "25"
+        timeout_s = float(os.environ.get(f"PRODWATCH_LLM_TIMEOUT_S_{task_key}") or os.environ.get("PRODWATCH_LLM_TIMEOUT_S") or timeout_default)
+        max_retries = int(os.environ.get(f"PRODWATCH_LLM_MAX_RETRIES_{task_key}") or os.environ.get("PRODWATCH_LLM_MAX_RETRIES") or "2")
         if not api_key:
             return LLMTaskResponse(ok=False, provider=self.name, model=model, prompt_version=req.prompt_version, output={}, error="Qwen API key not configured")
         cfg = OpenAICompatConfig(
@@ -46,13 +49,44 @@ class QwenProvider:
                 )
             return LLMTaskResponse(ok=True, provider=self.name, model=str(model), prompt_version=req.prompt_version, output=out)
         except Exception as e:
-            return LLMTaskResponse(ok=False, provider=self.name, model=str(model), prompt_version=req.prompt_version, output={}, error=str(e))
+            msg = str(e)
+            detail = f"{type(e).__name__}: {msg}" if msg else f"{type(e).__name__}"
+            detail = f"{detail} (base_url={base_url}, model={model}, timeout_s={timeout_s}, max_retries={max_retries})"
+            return LLMTaskResponse(
+                ok=False,
+                provider=self.name,
+                model=str(model),
+                prompt_version=req.prompt_version,
+                output={},
+                error=detail,
+            )
 
-# 根据不同任务类型规范化输出，确保返回格式一致，方便后续处理。
+    # 根据不同任务类型规范化输出，确保返回格式一致，方便后续处理。
     def _normalize_output(self, task_type: str, parsed: Any) -> dict[str, Any] | None:
         t = str(task_type)
         if not isinstance(parsed, dict):
             return None
+
+        def md_block(v: Any) -> str:
+            # Normalize possible list outputs into markdown bullet-list string.
+            if v is None:
+                return ""
+            if isinstance(v, str):
+                return v
+            if isinstance(v, list):
+                lines: list[str] = []
+                for it in v:
+                    s = str(it or "").strip()
+                    if not s:
+                        continue
+                    if s.startswith("- "):
+                        lines.append(s)
+                    elif s.startswith("-"):
+                        lines.append("- " + s.lstrip("-").strip())
+                    else:
+                        lines.append("- " + s)
+                return "\n".join(lines)
+            return str(v)
 
         if t == "sentiment_analysis":
             return {
@@ -80,8 +114,8 @@ class QwenProvider:
         if t == "report_generation":
             return {
                 "summary": str(parsed.get("summary") or ""),
-                "executive_summary_md": str(parsed.get("executive_summary_md") or ""),
-                "strategy_suggestions_md": str(parsed.get("strategy_suggestions_md") or ""),
+                "executive_summary_md": md_block(parsed.get("executive_summary_md")),
+                "strategy_suggestions_md": md_block(parsed.get("strategy_suggestions_md")),
                 "content_markdown": str(parsed.get("content_markdown") or ""),
             }
         return parsed

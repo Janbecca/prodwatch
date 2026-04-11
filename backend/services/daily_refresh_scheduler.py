@@ -27,6 +27,7 @@ class SchedulerConfig:
     minute: int
     posts_per_target: int
     created_by: str
+    catch_up_on_start: bool
 
 
 def load_scheduler_config() -> SchedulerConfig:
@@ -36,6 +37,9 @@ def load_scheduler_config() -> SchedulerConfig:
     minute = int(os.environ.get("PRODWATCH_DAILY_REFRESH_MINUTE", str(DEFAULT_DAILY_REFRESH_MINUTE)))
     posts_per_target = int(os.environ.get("PRODWATCH_DAILY_POSTS_PER_TARGET", "3"))
     created_by = os.environ.get("PRODWATCH_SCHEDULER_CREATED_BY", "scheduler").strip() or "scheduler"
+    # Catch-up behavior: if backend starts after the scheduled hh:mm, should it immediately run once?
+    # Default off for dev/demo to avoid unexpected background refresh holding SQLite write locks.
+    catch_up_on_start = os.environ.get("PRODWATCH_SCHEDULER_CATCHUP", "0").strip() in {"1", "true", "True"}
     # clamp
     hour = max(0, min(23, hour))
     minute = max(0, min(59, minute))
@@ -46,6 +50,7 @@ def load_scheduler_config() -> SchedulerConfig:
         minute=minute,
         posts_per_target=posts_per_target,
         created_by=created_by,
+        catch_up_on_start=bool(catch_up_on_start),
     )
 
 
@@ -66,6 +71,7 @@ class DailyRefreshScheduler:
         self._last_run_date: Optional[str] = None  # YYYY-MM-DD (local)
         self._last_run_at: Optional[str] = None
         self._last_results: Optional[list[dict[str, Any]]] = None
+        self._started_at: Optional[datetime] = None
 
     def start(self) -> None:
         if not self.cfg.enabled:
@@ -74,6 +80,7 @@ class DailyRefreshScheduler:
         if self._thread and self._thread.is_alive():
             return
         self._thread = threading.Thread(target=self._loop, name="prodwatch-daily-scheduler", daemon=True)
+        self._started_at = datetime.now()
         self._thread.start()
         log.info("DailyRefreshScheduler started: %02d:%02d", self.cfg.hour, self.cfg.minute)
 
@@ -118,7 +125,15 @@ class DailyRefreshScheduler:
                 with self._lock:
                     already_ran_today = self._last_run_date == today
                 if should_run and not already_ran_today:
-                    self._run_daily(stat_date=today)
+                    # Skip immediate catch-up on first start unless explicitly enabled.
+                    if not self.cfg.catch_up_on_start and self._last_run_date is None:
+                        with self._lock:
+                            self._last_run_date = today
+                            self._last_run_at = now.strftime("%Y-%m-%d %H:%M:%S")
+                            self._last_results = []
+                        log.info("DailyRefreshScheduler skipped catch-up on start (set PRODWATCH_SCHEDULER_CATCHUP=1 to enable).")
+                    else:
+                        self._run_daily(stat_date=today)
                 # polling interval
                 self._stop.wait(5.0)
             except Exception:

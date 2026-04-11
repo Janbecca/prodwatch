@@ -16,8 +16,10 @@
 
 <script setup>
 import { computed } from 'vue'
+import { ElMessage } from 'element-plus'
 import { useProjectsStore } from '../stores/projects'
 import { useReportsStore } from '../stores/reports'
+import { useRefreshStore } from '../stores/refresh'
 
 import ReportsFilters from '../components/reports/ReportsFilters.vue'
 import ReportsTable from '../components/reports/ReportsTable.vue'
@@ -28,8 +30,14 @@ import ReportEvidenceDialog from '../components/reports/ReportEvidenceDialog.vue
 const projectsStore = useProjectsStore()
 const hasProjects = computed(() => projectsStore.projects.length > 0)
 const store = useReportsStore()
+const refreshStore = useRefreshStore()
 
 function openCreate() {
+  const pid = Number(store.draft?.projectId ?? projectsStore.activeProjectId)
+  if (refreshStore.isRefreshing(pid)) {
+    ElMessage.warning('项目正在刷新中，请稍后再新建报告')
+    return
+  }
   store.createPrefill = null
   store.createOpen = true
 }

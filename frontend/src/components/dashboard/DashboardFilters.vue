@@ -76,14 +76,20 @@
       </el-form-item>
 
       <el-form-item>
-        <el-button
-          :loading="dashboard.refreshLoading"
-          type="primary"
-          :disabled="!hasEnabledProject || dashboard.refreshLoading || dashboard.scopeLoading"
-          @click="dashboard.manualRefresh()"
+        <el-tooltip
+          :disabled="!isRefreshing"
+          content="项目正在刷新中，请稍后再操作"
+          placement="top"
         >
-          手动刷新
-        </el-button>
+          <el-button
+            :loading="dashboard.refreshLoading"
+            type="primary"
+            :disabled="!hasEnabledProject || dashboard.refreshLoading || dashboard.scopeLoading || isRefreshing"
+            @click="dashboard.manualRefresh()"
+          >
+            手动刷新
+          </el-button>
+        </el-tooltip>
       </el-form-item>
     </el-form>
 
@@ -125,6 +131,7 @@ import { computed, watch } from 'vue'
 import PageSection from '../common/PageSection.vue'
 import { useDashboardStore } from '../../stores/dashboard'
 import { useProjectsStore } from '../../stores/projects'
+import { useRefreshStore } from '../../stores/refresh'
 
 const props = defineProps({
   locked: { type: Boolean, default: false },
@@ -132,6 +139,7 @@ const props = defineProps({
 
 const dashboard = useDashboardStore()
 const store = useProjectsStore()
+const refreshStore = useRefreshStore()
 
 const enabledProjects = computed(() => {
   return (store.projects || []).filter((p) => Number(p?.is_active || 0) === 1)
@@ -145,6 +153,7 @@ const isActiveProjectEnabled = computed(() => {
 })
 
 const hasEnabledProject = computed(() => enabledProjects.value.length > 0 && isActiveProjectEnabled.value)
+const isRefreshing = computed(() => refreshStore.isRefreshing(store.activeProjectId))
 
 // If the current activeProjectId is not enabled, auto-select the first enabled project.
 watch(

@@ -39,7 +39,7 @@ def _sentiment_words(polarity: str) -> tuple[str, str]:
         return ("有点失望", "体验一般")
     return ("还行", "中规中矩")
 
-
+# 生成自然的中文评论，避免出现明显的字段拼接痕迹。
 def _render_natural_cn_comment(*, style: str, brand: str, keyword: str, feature_term: str, polarity: str) -> str:
     """
     Deterministic/mock fallback should still look like real user comments.
@@ -114,12 +114,10 @@ class CrawlContext:
 
 
 class CrawlerGenerationService:
-    """
-    Service for simulated crawler generation.
 
-    Uses LLM router with task_type=crawler_generation so you can swap providers/models later.
-    """
-
+    # 生成模拟帖子
+    # 首先尝试使用LLM Router生成
+    # 如果失败或输出不符合预期，则使用确定性的方式生成剩余的帖子
     def generate_posts(self, ctx: CrawlContext, *, con=None) -> list[dict[str, Any]]:
         """
         Generate simulated posts for a single crawl_job_target.
@@ -150,6 +148,8 @@ class CrawlerGenerationService:
                     "crawled_at": crawled_at,
                 },
                 con=con,
+                enable_cache=False,
+                enable_log=False,
             )
             router_ok = bool(res.ok)
             router_provider = str(res.provider or "") if hasattr(res, "provider") else None
@@ -195,6 +195,8 @@ class CrawlerGenerationService:
             )
         return out[: max(0, int(ctx.posts_per_target))]
 
+
+    #llm调用不成功时mock的输出
     def _normalize_posts(
         self,
         ctx: CrawlContext,
@@ -216,8 +218,8 @@ class CrawlerGenerationService:
 
             external_post_id = str(item.get("external_post_id") or "").strip()
             if not external_post_id:
-                # Include crawl_job_id to avoid repeated manual refresh generating identical IDs
-                # (which would be ignored by INSERT OR IGNORE and appear as "no new data").
+                # 用 crawl_job_id + target_id + idx 生成外部ID
+                # 确保同一批次/目标的帖子ID稳定不变，避免刷新时重复或丢失
                 external_post_id = sha1_hex(f"{ctx.project_id}|{ctx.crawl_job_id}|{ctx.target_id}|{ctx.stat_date}|{idx}")[:18]
 
             post_url = str(item.get("post_url") or "").strip()
@@ -239,7 +241,7 @@ class CrawlerGenerationService:
                     polarity="ok",
                 )
             sanitized = False
-            # Safety net: if a model returns stitched fields, rewrite it to a natural Chinese comment.
+            # 安全起见，如果内容里有明显的字段拼接痕迹，就替换成正常的评论文本，避免直接暴露给用户。
             if _FORBIDDEN_FIELD_STITCH_RE.search(content):
                 sanitized = True
                 style = _pick_style(ctx.platform_code)
@@ -312,12 +314,13 @@ class CrawlerGenerationService:
         prompt_version: str,
     ) -> list[dict[str, Any]]:
         """
-        Stable deterministic fallback (official long-term fallback, not temporary).
+        生成确定性的模拟帖子，作为LLM生成失败时的稳定输出。
         """
         n = max(0, int(count))
         if n <= 0:
             return []
-        # Use Chinese feature terms so fallback content reads naturally in UI.
+        # 设计一个有限的特征词池，结合target_id和idx循环使用，
+        # 确保生成内容在不同刷新/目标间有一定多样性，但同一目标的输出稳定不变。
         feature_terms = ["续航", "拍照", "价格", "系统流畅度", "发热", "售后"]
         out: list[dict[str, Any]] = []
         for j in range(n):

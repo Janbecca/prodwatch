@@ -431,6 +431,53 @@ def fetch_top_keywords(con: sqlite3.Connection, project_id: int, start: str, end
     return [{"keyword": r["keyword"], "hit_count": int(r["hit_count"] or 0)} for r in rows]
 
 
+def fetch_top_topics(con: sqlite3.Connection, project_id: int, start: str, end: str, cfg: ReportConfigResolved, top_n: int = 15) -> list[dict]:
+    """
+    Hot topics for the report (main source: topic_result).
+
+    Primary: daily_topic_metric (derived from topic_result).
+    Fallback: aggregate directly from topic_result + post_raw (legacy DB).
+    """
+    plat_sql, plat_params = _in_filter("platform_id", cfg.platform_ids)
+    brand_sql, brand_params = _in_filter("brand_id", cfg.brand_ids)
+    try:
+        rows = con.execute(
+            f"""
+            SELECT topic, SUM(COALESCE(hit_count,0)) AS hit_count
+            FROM daily_topic_metric
+            WHERE project_id=?
+              AND stat_date BETWEEN ? AND ?
+              {plat_sql}
+              {brand_sql}
+            GROUP BY topic
+            ORDER BY hit_count DESC, topic ASC
+            LIMIT ?;
+            """,
+            (project_id, start, end, *plat_params, *brand_params, int(top_n)),
+        ).fetchall()
+        return [{"topic": r["topic"], "hit_count": int(r["hit_count"] or 0)} for r in rows]
+    except sqlite3.Error as e:
+        if "no such table" not in str(e).lower():
+            raise
+
+    rows = con.execute(
+        f"""
+        SELECT tr.topic AS topic, COUNT(*) AS hit_count
+        FROM topic_result tr
+        JOIN post_raw pr ON pr.id=tr.post_id
+        WHERE pr.project_id=?
+          AND date(COALESCE(pr.publish_time, pr.crawled_at)) BETWEEN ? AND ?
+          {plat_sql.replace('platform_id', 'pr.platform_id')}
+          {brand_sql.replace('brand_id', 'pr.brand_id')}
+        GROUP BY tr.topic
+        ORDER BY hit_count DESC, tr.topic ASC
+        LIMIT ?;
+        """,
+        (project_id, start, end, *plat_params, *brand_params, int(top_n)),
+    ).fetchall()
+    return [{"topic": r["topic"], "hit_count": int(r["hit_count"] or 0)} for r in rows]
+
+
 def fetch_top_negative_features(con: sqlite3.Connection, project_id: int, start: str, end: str, cfg: ReportConfigResolved, top_n: int = 10) -> list[dict]:
     brand_sql, brand_params = _in_filter("brand_id", cfg.brand_ids)
     rows = con.execute(
@@ -631,7 +678,7 @@ def llm_mock_generate_markdown(
     report: sqlite3.Row,
     overview: dict,
     trend: list[dict],
-    top_keywords: list[dict],
+    top_topics: list[dict],
     top_features: list[dict],
     competitor: list[dict],
     posts: dict[str, list[sqlite3.Row]],
@@ -654,74 +701,74 @@ def llm_mock_generate_markdown(
     trend_lines = []
     for d in trend:
         trend_lines.append(
-            f"- {d['stat_date']}: total={d['total_post_count']}, pos={d['positive_count']}, neu={d['neutral_count']}, neg={d['negative_count']}, score={d['weighted_avg_sentiment_score']:.3f}"
+            f"- {d['stat_date']}: 总量={d['total_post_count']}，正面={d['positive_count']}，中性={d['neutral_count']}，负面={d['negative_count']}，情感得分={d['weighted_avg_sentiment_score']:.3f}"
         )
 
-    keyword_lines = []
-    for k in top_keywords[:10]:
-        keyword_lines.append(f"- {k['keyword']}: {k['hit_count']}")
+    topic_lines = []
+    for t in top_topics[:10]:
+        topic_lines.append(f"- {t['topic']}: {t['hit_count']}")
 
     risk_lines = []
     if top_features:
-        risk_lines.append("Top negative features:")
+        risk_lines.append("负面特征（Top）：")
         for f in top_features[:5]:
-            risk_lines.append(f"- {f['feature_name']}: neg={f['negative_count']}, mentions={f['mention_count']}")
-    if top_keywords:
-        risk_lines.append("Top keywords:")
-        for k in top_keywords[:5]:
-            risk_lines.append(f"- {k['keyword']}: hits={k['hit_count']}")
+            risk_lines.append(f"- {f['feature_name']}: 负面={f['negative_count']}，提及={f['mention_count']}")
+    if top_topics:
+        risk_lines.append("热点话题（Top）：")
+        for t in top_topics[:5]:
+            risk_lines.append(f"- {t['topic']}: 提及={t['hit_count']}")
 
     feedback_lines = []
     for r in posts.get("popular", [])[:5]:
         content = (r["content"] or "").strip().replace("\n", " ")
         feedback_lines.append(
-            f"- (post_id={r['post_id']}) likes={r['like_count'] or 0} sentiment={r['sentiment']}: {content[:120]}"
+            f"- (post_id={r['post_id']}) 点赞={r['like_count'] or 0} 情感={r['sentiment']}: {content[:120]}"
         )
 
     competitor_lines = []
     for c in competitor:
         competitor_lines.append(
-            f"- {c['brand_name']}: total={c['total_post_count']} neg_rate={pct(float(c['negative_rate']))} score={float(c['weighted_avg_sentiment_score']):.3f}"
+            f"- {c['brand_name']}: 总量={c['total_post_count']} 负面占比={pct(float(c['negative_rate']))} 情感得分={float(c['weighted_avg_sentiment_score']):.3f}"
         )
 
     strategy_lines = [
-        "- Prioritize fixes for top negative features (above).",
-        "- Improve response playbook for high-risk keywords and complaints.",
-        "- Track daily sentiment score and negative rate; trigger alerts on spikes.",
+        "- 优先修复负面提及最多的特征问题，并同步发布进展。",
+        "- 针对高风险关键词与投诉类型，完善各平台的响应话术与节奏。",
+        "- 持续追踪情感得分与负面占比，出现异常波动时及时告警与复盘。",
     ]
 
     md = "\n".join(
         [
             f"# {title}",
             "",
-            "## Executive Summary",
+            "## 执行摘要",
             *exec_lines,
             "",
-            "## Public Opinion Trend",
-            *(trend_lines if trend_lines else ["- (no aggregated data)"]),
+            "## 舆情趋势",
+            *(trend_lines if trend_lines else ["- （暂无聚合数据）"]),
             "",
-            "## Risk Points",
-            *(risk_lines if risk_lines else ["- (no risk data)"]),
+            "## 风险点",
+            *(risk_lines if risk_lines else ["- （暂无风险数据）"]),
             "",
-            "## Key User Feedback",
-            *(feedback_lines if feedback_lines else ["- (no posts)"]),
+            "## 关键用户反馈",
+            *(feedback_lines if feedback_lines else ["- （暂无帖子）"]),
             "",
-            "## Competitor Compare",
-            *(competitor_lines if competitor_lines else ["- (no competitor data)"]),
+            "## 竞品对比",
+            *(competitor_lines if competitor_lines else ["- （暂无竞品数据）"]),
             "",
-            "## Strategy Suggestions",
+            "## 策略建议",
             *strategy_lines,
             "",
-            "## Keyword Monitor",
-            *(keyword_lines if keyword_lines else ["- (no keywords)"]),
+            "## 热点话题",
+            *(topic_lines if topic_lines else ["- （暂无话题数据）"]),
             "",
         ]
     )
 
     summary = (
-        f"total={overview.get('total_post_count', 0)}, "
-        f"neg_rate={pct(float(overview.get('negative_rate', 0.0)))}, "
-        f"spam_rate={pct(float(overview.get('spam_rate', 0.0)))}"
+        f"总帖子数={overview.get('total_post_count', 0)}，"
+        f"负面占比={pct(float(overview.get('negative_rate', 0.0)))}，"
+        f"垃圾占比={pct(float(overview.get('spam_rate', 0.0)))}"
     )
     return summary, md
 
@@ -824,7 +871,7 @@ def generate_report(con: sqlite3.Connection, report_id: int) -> dict[str, Any]:
 
     overview = fetch_agg_overview(con, project_id, start, end, cfg)
     trend = fetch_sentiment_trend(con, project_id, start, end, cfg) if cfg.include_trend else []
-    top_keywords = fetch_top_keywords(con, project_id, start, end, cfg) if cfg.include_topics else []
+    top_topics = fetch_top_topics(con, project_id, start, end, cfg) if cfg.include_topics else []
     top_features = fetch_top_negative_features(con, project_id, start, end, cfg) if cfg.include_feature_analysis else []
     competitor = fetch_competitor_compare(con, project_id, start, end, cfg) if cfg.include_competitor_compare else []
     posts = fetch_candidate_posts(con, project_id, start, end, cfg, limit_each=6)
@@ -833,7 +880,7 @@ def generate_report(con: sqlite3.Connection, report_id: int) -> dict[str, Any]:
         report=report,
         overview=overview,
         trend=trend,
-        top_keywords=top_keywords,
+        top_topics=top_topics,
         top_features=top_features,
         competitor=competitor,
         posts=posts,

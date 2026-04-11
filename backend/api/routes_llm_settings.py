@@ -33,8 +33,6 @@ def _ensure_llm_task_config_table(con: sqlite3.Connection) -> None:
           task_type TEXT PRIMARY KEY,
           provider TEXT NOT NULL,
           model TEXT,
-          fallback_provider TEXT NOT NULL DEFAULT 'mock',
-          fallback_model TEXT,
           updated_at DATETIME
         );
         """
@@ -77,8 +75,6 @@ class LLMTaskConfigDTO(BaseModel):
     task_type: str = Field(..., min_length=1)
     provider: str = Field(..., min_length=1)
     model: Optional[str] = None
-    fallback_provider: str = Field(default="mock", min_length=1)
-    fallback_model: Optional[str] = None
 
 
 class UpdateLLMTaskConfigRequest(BaseModel):
@@ -101,7 +97,7 @@ def get_task_configs(db: sqlite3.Connection = Depends(get_db_relaxed)) -> dict[s
     if _has_table(db, "llm_task_config"):
         rows = db.execute(
             """
-            SELECT task_type, provider, model, fallback_provider, fallback_model, updated_at
+            SELECT task_type, provider, model, updated_at
             FROM llm_task_config
             ORDER BY task_type ASC;
             """
@@ -110,8 +106,6 @@ def get_task_configs(db: sqlite3.Connection = Depends(get_db_relaxed)) -> dict[s
             overrides[str(r["task_type"])] = {
                 "provider": r["provider"],
                 "model": r["model"],
-                "fallback_provider": r["fallback_provider"],
-                "fallback_model": r["fallback_model"],
                 "updated_at": r["updated_at"],
             }
 
@@ -125,8 +119,6 @@ def get_task_configs(db: sqlite3.Connection = Depends(get_db_relaxed)) -> dict[s
                 "effective": {
                     "provider": eff.provider,
                     "model": eff.model,
-                    "fallback_provider": eff.fallback_provider,
-                    "fallback_model": eff.fallback_model,
                 },
                 "override": ov,
             }
@@ -145,21 +137,12 @@ def upsert_task_configs(payload: UpdateLLMTaskConfigRequest, db: sqlite3.Connect
 
     for dto in payload.configs:
         provider = str(dto.provider).strip().lower()
-        fb_provider = str(dto.fallback_provider).strip().lower()
         if provider not in allowed:
             raise HTTPException(status_code=400, detail=f"unknown provider: {provider}")
-        if fb_provider not in allowed:
-            raise HTTPException(status_code=400, detail=f"unknown fallback_provider: {fb_provider}")
         cfg = LLMTaskConfig(
             task_type=str(dto.task_type).strip(),
             provider=provider,
             model=(str(dto.model).strip() if dto.model is not None and str(dto.model).strip() != "" else None),
-            fallback_provider=fb_provider,
-            fallback_model=(
-                str(dto.fallback_model).strip()
-                if dto.fallback_model is not None and str(dto.fallback_model).strip() != ""
-                else None
-            ),
         )
         store.upsert(db, cfg)
 

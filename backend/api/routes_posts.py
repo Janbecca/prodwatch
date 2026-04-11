@@ -84,7 +84,7 @@ def _build_post_where(
         kw_sql, kw_params = in_filter("pkr.keyword", keywords)
         if kw_sql:
             clauses.append(
-                f"EXISTS(SELECT 1 FROM post_keyword_result pkr WHERE pkr.post_id=pr.id{kw_sql})"
+                f"EXISTS(SELECT 1 FROM post_keyword_result pkr WHERE pkr.post_id=pr.id AND COALESCE(pkr.keyword_type,'')!='topic'{kw_sql})"
             )
             params.extend(kw_params)
         else:
@@ -300,13 +300,15 @@ def list_posts(
           sp.spam_label,
           sp.spam_score,
           GROUP_CONCAT(DISTINCT pkr.keyword) AS keywords,
-          GROUP_CONCAT(DISTINCT pfr.feature_name) AS features
+          GROUP_CONCAT(DISTINCT pfr.feature_name) AS features,
+          GROUP_CONCAT(DISTINCT tr.topic) AS topics
         FROM post_raw pr
         LEFT JOIN post_clean_result pc ON pc.post_id=pr.id
         LEFT JOIN post_sentiment_result ps ON ps.post_id=pr.id
         LEFT JOIN post_spam_result sp ON sp.post_id=pr.id
-        LEFT JOIN post_keyword_result pkr ON pkr.post_id=pr.id
+        LEFT JOIN post_keyword_result pkr ON pkr.post_id=pr.id AND COALESCE(pkr.keyword_type,'')!='topic'
         LEFT JOIN post_feature_result pfr ON pfr.post_id=pr.id
+        LEFT JOIN topic_result tr ON tr.post_id=pr.id
         {where}
         GROUP BY pr.id
         ORDER BY COALESCE(pr.publish_time, pr.crawled_at) DESC, pr.id DESC
@@ -345,6 +347,7 @@ def list_posts(
                 "spam_score": r["spam_score"],
                 "keywords": (r["keywords"].split(",") if r["keywords"] else []),
                 "features": (r["features"].split(",") if r["features"] else []),
+                "topics": (r["topics"].split(",") if r["topics"] else []),
             }
         )
 
@@ -370,7 +373,14 @@ def list_posts(
             SELECT COUNT(DISTINCT pkr.keyword)
             FROM post_keyword_result pkr
             INNER JOIN filtered f2 ON f2.post_id=pkr.post_id
+            WHERE COALESCE(pkr.keyword_type,'')!='topic'
           ) AS hot_keyword_count
+          ,
+          (
+            SELECT COUNT(DISTINCT tr.topic)
+            FROM topic_result tr
+            INNER JOIN filtered f3 ON f3.post_id=tr.post_id
+          ) AS hot_topic_count
         FROM filtered f
         LEFT JOIN post_clean_result pc ON pc.post_id=f.post_id
         LEFT JOIN post_spam_result sp ON sp.post_id=f.post_id
@@ -388,6 +398,7 @@ def list_posts(
         "neutral_count": int(overview_row["neutral_count"] or 0),
         "negative_count": int(overview_row["negative_count"] or 0),
         "hot_keyword_count": int(overview_row["hot_keyword_count"] or 0),
+        "hot_topic_count": int(overview_row["hot_topic_count"] or 0),
     }
 
     return {
@@ -472,13 +483,25 @@ def post_detail(
         """
         SELECT keyword
         FROM post_keyword_result
-        WHERE post_id=?
+        WHERE post_id=? AND COALESCE(keyword_type,'')!='topic'
         GROUP BY keyword
         ORDER BY keyword ASC;
         """,
         (int(post_id),),
     ).fetchall()
     keywords = [str(r["keyword"]) for r in kw_rows if r["keyword"] is not None]
+
+    topic_rows = db.execute(
+        """
+        SELECT topic
+        FROM topic_result
+        WHERE post_id=?
+        GROUP BY topic
+        ORDER BY topic ASC;
+        """,
+        (int(post_id),),
+    ).fetchall()
+    topics = [str(r["topic"]) for r in topic_rows if r["topic"] is not None]
 
     feat_rows = db.execute(
         """
@@ -526,6 +549,7 @@ def post_detail(
         "spam_label": row["spam_label"],
         "spam_score": row["spam_score"],
         "keywords": keywords,
+        "topics": topics,
         "features": features,
     }
 

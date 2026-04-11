@@ -23,8 +23,13 @@ class DeepSeekProvider:
         api_key = os.environ.get("PRODWATCH_DEEPSEEK_API_KEY") or os.environ.get("DEEPSEEK_API_KEY")
         base_url = os.environ.get("PRODWATCH_DEEPSEEK_BASE_URL") or os.environ.get("DEEPSEEK_BASE_URL") or "https://api.deepseek.com/v1"
         model = req.model or os.environ.get("PRODWATCH_DEEPSEEK_MODEL") or os.environ.get("DEEPSEEK_MODEL") or "deepseek-chat"
-        timeout_s = float(os.environ.get("PRODWATCH_LLM_TIMEOUT_S") or "25")
-        max_retries = int(os.environ.get("PRODWATCH_LLM_MAX_RETRIES") or "2")
+        # Task-specific overrides:
+        # - PRODWATCH_LLM_TIMEOUT_S_<TASK_TYPE> (uppercased)
+        # - PRODWATCH_LLM_MAX_RETRIES_<TASK_TYPE> (uppercased)
+        task_key = str(getattr(req, "task_type", "") or "").strip().upper()
+        timeout_default = "60" if str(getattr(req, "task_type", "") or "") == "crawler_generation" else "25"
+        timeout_s = float(os.environ.get(f"PRODWATCH_LLM_TIMEOUT_S_{task_key}") or os.environ.get("PRODWATCH_LLM_TIMEOUT_S") or timeout_default)
+        max_retries = int(os.environ.get(f"PRODWATCH_LLM_MAX_RETRIES_{task_key}") or os.environ.get("PRODWATCH_LLM_MAX_RETRIES") or "2")
         if not api_key:
             return LLMTaskResponse(ok=False, provider=self.name, model=model, prompt_version=req.prompt_version, output={}, error="DeepSeek API key not configured")
 
@@ -49,12 +54,44 @@ class DeepSeekProvider:
                 )
             return LLMTaskResponse(ok=True, provider=self.name, model=str(model), prompt_version=req.prompt_version, output=out)
         except Exception as e:
-            return LLMTaskResponse(ok=False, provider=self.name, model=str(model), prompt_version=req.prompt_version, output={}, error=str(e))
+            # Include key debug context to help diagnose timeouts / base_url misconfig.
+            msg = str(e)
+            detail = f"{type(e).__name__}: {msg}" if msg else f"{type(e).__name__}"
+            detail = f"{detail} (base_url={base_url}, model={model}, timeout_s={timeout_s}, max_retries={max_retries})"
+            return LLMTaskResponse(
+                ok=False,
+                provider=self.name,
+                model=str(model),
+                prompt_version=req.prompt_version,
+                output={},
+                error=detail,
+            )
 
     def _normalize_output(self, task_type: str, parsed: Any) -> dict[str, Any] | None:
         t = str(task_type)
         if not isinstance(parsed, dict):
             return None
+
+        def md_block(v: Any) -> str:
+            # Normalize possible list outputs into markdown bullet-list string.
+            if v is None:
+                return ""
+            if isinstance(v, str):
+                return v
+            if isinstance(v, list):
+                lines = []
+                for it in v:
+                    s = str(it or "").strip()
+                    if not s:
+                        continue
+                    if s.startswith("- "):
+                        lines.append(s)
+                    elif s.startswith("-"):
+                        lines.append("- " + s.lstrip("-").strip())
+                    else:
+                        lines.append("- " + s)
+                return "\n".join(lines)
+            return str(v)
 
         if t == "sentiment_analysis":
             return {
@@ -84,8 +121,8 @@ class DeepSeekProvider:
             return {
                 "summary": str(parsed.get("summary") or ""),
                 # v2: incremental blocks (preferred)
-                "executive_summary_md": str(parsed.get("executive_summary_md") or ""),
-                "strategy_suggestions_md": str(parsed.get("strategy_suggestions_md") or ""),
+                "executive_summary_md": md_block(parsed.get("executive_summary_md")),
+                "strategy_suggestions_md": md_block(parsed.get("strategy_suggestions_md")),
                 # v1 compatibility (some providers/users may still return full markdown)
                 "content_markdown": str(parsed.get("content_markdown") or ""),
             }
