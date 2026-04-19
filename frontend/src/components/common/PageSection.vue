@@ -21,11 +21,21 @@ defineProps({
 </script>
 
 <style scoped>
+.section {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.section :deep(.el-card__body) {
+  flex: 1;
+  min-height: 0;
+}
 .section__header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
 }
 .section__extra {
   display: flex;
@@ -33,4 +43,3 @@ defineProps({
   gap: 8px;
 }
 </style>
-

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
+import time
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -12,9 +14,17 @@ from backend.api.db import get_db
 from backend.api.params import DateRange, parse_date_range
 from backend.services.refresh_service import get_refresh_service
 from backend.services.report_generation_service import get_report_generation_service
+from backend.report_chain_e import (
+    fetch_evidence_key_feedback_posts,
+    fetch_evidence_overview_by_brand,
+    fetch_evidence_risk_keywords,
+    fetch_evidence_sentiment_trend_daily_by_brand,
+    fetch_evidence_topic_monitor_stacked,
+)
 
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
+log = logging.getLogger("prodwatch.reports")
 
 def _has_column(db: sqlite3.Connection, table: str, col: str) -> bool:
     try:
@@ -29,6 +39,86 @@ def _report_trigger_type(created_by: Optional[str]) -> str:
     if cb in {"scheduler", "scheduled"}:
         return "scheduled"
     return "manual"
+
+
+def _ensure_report_config_table(db: sqlite3.Connection) -> None:
+    """
+    Best-effort runtime schema alignment for `report_config`.
+
+    This repo is often run without a dedicated migration runner, and older SQLite files may miss
+    some include_* columns. We auto-add them to avoid 500s on report creation/generation.
+    """
+    try:
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS report_config (
+              report_id INTEGER PRIMARY KEY,
+              platform_ids TEXT,
+              brand_ids TEXT,
+              keywords TEXT,
+              include_sentiment INTEGER,
+              include_trend INTEGER,
+              include_topics INTEGER,
+              include_feature_analysis INTEGER,
+              include_spam INTEGER,
+              include_competitor_compare INTEGER,
+              include_strategy INTEGER
+            );
+            """
+        )
+    except Exception:
+        return
+
+    try:
+        cols = {r[1] for r in db.execute("PRAGMA table_info(report_config);").fetchall()}
+    except Exception:
+        cols = set()
+
+    # Some older DBs may have an auto-increment `id` primary key and no `report_id` column.
+    # We always require a `report_id` column to join report_config -> report.
+    if "report_id" not in cols:
+        try:
+            db.execute("ALTER TABLE report_config ADD COLUMN report_id INTEGER;")
+        except Exception:
+            pass
+        try:
+            db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_report_config_report_id ON report_config(report_id);")
+        except Exception:
+            pass
+
+    desired = [
+        ("platform_ids", "TEXT"),
+        ("brand_ids", "TEXT"),
+        ("keywords", "TEXT"),
+        ("include_sentiment", "INTEGER"),
+        ("include_trend", "INTEGER"),
+        ("include_topics", "INTEGER"),
+        ("include_feature_analysis", "INTEGER"),
+        ("include_spam", "INTEGER"),
+        ("include_competitor_compare", "INTEGER"),
+        ("include_strategy", "INTEGER"),
+    ]
+    for name, typ in desired:
+        if name in cols:
+            continue
+        try:
+            db.execute(f"ALTER TABLE report_config ADD COLUMN {name} {typ};")
+        except Exception:
+            continue
+
+
+def _table_info_safe(db: sqlite3.Connection, table: str) -> list[dict[str, Any]]:
+    try:
+        rows = db.execute(f"PRAGMA table_info({table});").fetchall()
+    except Exception:
+        return []
+    out: list[dict[str, Any]] = []
+    for r in rows or []:
+        try:
+            out.append({"name": r[1], "type": r[2]})
+        except Exception:
+            continue
+    return out
 
 
 @router.get("/status")
@@ -340,9 +430,42 @@ def _csv_strs(values: Optional[list[str]]) -> Optional[str]:
 
 @router.post("/create")
 def create_report(req: CreateReportRequest, db: sqlite3.Connection = Depends(get_db)) -> dict[str, Any]:
+    t0 = time.time()
+    try:
+        log.info(
+            "report_create start project_id=%s report_type=%s data_range=%s~%s title=%s",
+            int(req.project_id),
+            str(req.report_type or ""),
+            str(req.data_start_date or ""),
+            str(req.data_end_date or ""),
+            str(req.title or "")[:120],
+        )
+        log.info(
+            "report_create filters project_id=%s platforms=%s brands=%s keywords=%s",
+            int(req.project_id),
+            (req.platform_ids if req.platform_ids is not None else None),
+            (req.brand_ids if req.brand_ids is not None else None),
+            (req.keywords if req.keywords is not None else None),
+        )
+        log.info(
+            "report_create modules project_id=%s %s",
+            int(req.project_id),
+            {
+                "include_sentiment": bool(req.include_sentiment),
+                "include_trend": bool(req.include_trend),
+                "include_topics": bool(req.include_topics),
+                "include_feature_analysis": bool(req.include_feature_analysis),
+                "include_spam": bool(req.include_spam),
+                "include_competitor_compare": bool(req.include_competitor_compare),
+                "include_strategy": bool(req.include_strategy),
+            },
+        )
+    except Exception:
+        pass
     try:
         dr = parse_date_range(req.data_start_date, req.data_end_date)
     except ValueError as e:
+        log.warning("report_create invalid_date_range project_id=%s err=%s", getattr(req, "project_id", None), str(e))
         raise HTTPException(status_code=400, detail=str(e))
 
     # Avoid creating/generating reports while a refresh is running.
@@ -419,6 +542,8 @@ def create_report(req: CreateReportRequest, db: sqlite3.Connection = Depends(get
             (int(req.project_id), title, report_type, dr.start_date, dr.end_date),
         )
     except sqlite3.IntegrityError as e:
+        # Note: report_id is not available yet (this is the report row insert).
+        log.warning("report_create insert_integrity_error project_id=%s err=%s", int(req.project_id), str(e))
         try:
             db.rollback()
         except Exception:
@@ -428,11 +553,14 @@ def create_report(req: CreateReportRequest, db: sqlite3.Connection = Depends(get
             raise HTTPException(status_code=400, detail="项目不存在或已被删除，无法创建报告。")
         raise HTTPException(status_code=400, detail=f"创建报告失败：{e}")
     except sqlite3.OperationalError as e:
+        # Note: report_id is not available yet (this is the report row insert).
+        log.exception("report_create insert_operational_error project_id=%s err=%s", int(req.project_id), str(e))
         msg = str(e).lower()
         if "database is locked" in msg or "database is busy" in msg:
             raise HTTPException(status_code=503, detail="数据库繁忙（写入被锁定），请稍后重试。")
         if ("no such column" not in msg) and ("has no column named" not in msg):
-            raise
+            schema = _table_info_safe(db, "report")
+            raise HTTPException(status_code=500, detail={"error": f"create report failed: {e}", "report_schema": schema})
         try:
             cur = db.execute(
                 """
@@ -466,6 +594,7 @@ def create_report(req: CreateReportRequest, db: sqlite3.Connection = Depends(get
                 (int(req.project_id), title, report_type, dr.start_date, dr.end_date),
             )
         except sqlite3.IntegrityError as e2:
+            log.warning("report_create insert_integrity_error_legacy project_id=%s err=%s", int(req.project_id), str(e2))
             try:
                 db.rollback()
             except Exception:
@@ -475,14 +604,22 @@ def create_report(req: CreateReportRequest, db: sqlite3.Connection = Depends(get
                 raise HTTPException(status_code=400, detail="项目不存在或已被删除，无法创建报告。")
             raise HTTPException(status_code=400, detail=f"创建报告失败：{e2}")
         except sqlite3.OperationalError as e2:
+            log.exception("report_create insert_operational_error_legacy project_id=%s err=%s", int(req.project_id), str(e2))
             msg2 = str(e2).lower()
             if "database is locked" in msg2 or "database is busy" in msg2:
                 raise HTTPException(status_code=503, detail="数据库繁忙（写入被锁定），请稍后重试。")
             raise
 
     report_id = int(cur.lastrowid)
+    log.info(
+        "report_create inserted report_id=%s project_id=%s dt_ms=%s",
+        report_id,
+        int(req.project_id),
+        int((time.time() - t0) * 1000),
+    )
 
     try:
+        _ensure_report_config_table(db)
         db.execute(
             """
             INSERT INTO report_config(
@@ -527,6 +664,7 @@ def create_report(req: CreateReportRequest, db: sqlite3.Connection = Depends(get
             ),
         )
         db.commit()
+        log.info("report_create config_inserted report_id=%s project_id=%s", report_id, int(req.project_id))
     except sqlite3.IntegrityError as e:
         try:
             db.rollback()
@@ -541,7 +679,8 @@ def create_report(req: CreateReportRequest, db: sqlite3.Connection = Depends(get
         msg = str(e).lower()
         if "database is locked" in msg or "database is busy" in msg:
             raise HTTPException(status_code=503, detail="数据库繁忙（写入被锁定），请稍后重试。")
-        raise HTTPException(status_code=500, detail=f"create report failed: {e}")
+        schema = _table_info_safe(db, "report_config")
+        raise HTTPException(status_code=500, detail={"error": f"create report failed: {e}", "report_config_schema": schema})
 
     # Generate immediately (minimal runnable chain). Keep create success even if generation fails,
     # but set report.status=failed and record error_message for observability.
@@ -550,15 +689,23 @@ def create_report(req: CreateReportRequest, db: sqlite3.Connection = Depends(get
         with db:
             # Evidence is derivable; clear it before generating to keep consistency.
             db.execute("DELETE FROM report_evidence WHERE report_id=?;", (int(report_id),))
+            log.info("report_create generate_start report_id=%s", int(report_id))
             result = svc.generate_sync(db, int(report_id), force=True)
+            log.info(
+                "report_create generate_done report_id=%s status=%s dt_ms=%s",
+                int(report_id),
+                str((result or {}).get("status") or ""),
+                int((time.time() - t0) * 1000),
+            )
         return {"ok": True, "report_id": report_id, **(result or {})}
     except Exception as e:
+        log.exception("report_create generate_failed report_id=%s err=%s", int(report_id), str(e))
         try:
             with db:
                 svc.mark_failed(db, int(report_id), str(e))
         except Exception:
             pass
-        return {"ok": True, "report_id": report_id, "status": "failed"}
+        return {"ok": True, "report_id": report_id, "status": "failed", "error_message": str(e)}
 
 
 class GenerateReportRequest(BaseModel):
@@ -668,4 +815,40 @@ def list_report_evidence(
         "page_size": page_size,
         "total": int(total or 0),
         "items": items,
+    }
+
+
+@router.get("/boards")
+def report_boards(
+    report_id: int = Query(..., ge=1),
+    top_brand_n: int = Query(4, ge=1, le=20),
+    top_topic_n: int = Query(15, ge=1, le=50),
+    top_risk_keyword_n: int = Query(20, ge=1, le=50),
+    feedback_limit: int = Query(20, ge=1, le=100),
+    db: sqlite3.Connection = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Report boards computed strictly from `report_evidence` dataset.
+
+    This ensures:
+    - report respects the scope selected at "create report" time;
+    - all boards are derived from the report's evidence posts.
+    """
+    row = db.execute("SELECT id FROM report WHERE id=? LIMIT 1;", (int(report_id),)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="report not found")
+
+    overview_items = fetch_evidence_overview_by_brand(db, int(report_id))
+    trend = fetch_evidence_sentiment_trend_daily_by_brand(db, int(report_id), top_n=int(top_brand_n))
+    topics = fetch_evidence_topic_monitor_stacked(db, int(report_id), top_n=int(top_topic_n))
+    risk_keywords = fetch_evidence_risk_keywords(db, int(report_id), top_n=int(top_risk_keyword_n))
+    feedback_posts = fetch_evidence_key_feedback_posts(db, int(report_id), limit=int(feedback_limit))
+
+    return {
+        "report_id": int(report_id),
+        "overview_by_brand": {"items": overview_items},
+        "sentiment_trend_daily_by_brand": {"dates": trend.get("dates") or [], "series": trend.get("series") or []},
+        "topic_monitor_stacked": {"dates": topics.get("dates") or [], "series": topics.get("series") or []},
+        "risk_keywords": risk_keywords,
+        "key_user_feedback": {"items": feedback_posts},
     }

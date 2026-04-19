@@ -9,6 +9,7 @@ import Reports from '../views/Reports.vue'
 import ReportDetail from '../views/ReportDetail.vue'
 import ProjectConfig from '../views/ProjectConfig.vue'
 import LLMConfig from '../views/LLMConfig.vue'
+import SystemOverview from '../views/SystemOverview.vue'
 
 const routes = [
   {
@@ -22,6 +23,7 @@ const routes = [
       { path: 'reports/:id', name: 'report-detail', component: ReportDetail },
       { path: 'project-config', name: 'project-config', component: ProjectConfig },
       { path: 'llm-config', name: 'llm-config', component: LLMConfig },
+      { path: 'system-overview', name: 'system-overview', component: SystemOverview },
     ],
   },
 ]

@@ -15,7 +15,9 @@ from backend.pipeline_main import (
     create_crawl_job,
     mark_job_running,
     parse_stat_date,
+    run_analyze_existing_job,
     run_pipeline_existing_job,
+    run_simulate_existing_job,
 )
 from backend.api.db import connect
 
@@ -148,14 +150,14 @@ class RefreshService:
             return None
 
         # If a running job is too old, consider it stale (likely crash) and auto-clear it.
-        # `started_at` is typically written using sqlite datetime('now','localtime').
-        # Compare with local time here to avoid timezone skew.
-        if stale_s > 0 and dt < (datetime.now() - timedelta(seconds=int(stale_s))):
+        # started_at is written in UTC (see backend/pipeline_main.py:now_ts), so compare with UTC here.
+        now = datetime.utcnow()
+        if stale_s > 0 and dt < (now - timedelta(seconds=int(stale_s))):
             self._mark_job_failed_best_effort(
                 con, job_id, f"刷新任务超时（运行中超过 {int(stale_s)} 秒），已自动标记为失败（可重试）"
             )
             return None
-        if dt >= (datetime.now() - timedelta(minutes=int(within_minutes))):
+        if dt >= (now - timedelta(minutes=int(within_minutes))):
             return job_id
         return None
 
@@ -319,6 +321,7 @@ class RefreshService:
         posts_per_target: int,
         trigger: str,  # manual|scheduled
         created_by: str,
+        crawl_source: Optional[str] = None,
     ) -> RefreshResult:
         """
         Fire-and-forget refresh runner.
@@ -404,6 +407,7 @@ class RefreshService:
                         project_id=pid,
                         stat_date=str(stat_date_norm),
                         posts_per_target=int(posts_per_target),
+                        crawl_source=crawl_source,
                     )
             except Exception as e:
                 log.exception("refresh_project_async worker failed project_id=%s trigger=%s", pid, trigger)
@@ -428,6 +432,199 @@ class RefreshService:
                     self._running_started_at.pop(pid, None)
 
         t = threading.Thread(target=_worker, name=f"prodwatch-refresh-{pid}", daemon=True)
+        t.start()
+
+        return RefreshResult(project_id=pid, skipped=False, stat_date=stat_date_norm, crawl_job_id=int(crawl_job_id))
+
+    def simulate_project_async(
+        self,
+        *,
+        db_path: str,
+        con: sqlite3.Connection,
+        project_id: int,
+        stat_date: Optional[str],
+        posts_per_target: int,
+        trigger: str,
+        created_by: str,
+        crawl_source: Optional[str] = None,
+    ) -> RefreshResult:
+        """
+        Start a simulate-only job (generate posts into post_raw, no analysis/aggregation).
+        """
+        return self._start_job_async(
+            db_path=str(db_path),
+            con=con,
+            project_id=int(project_id),
+            stat_date=stat_date,
+            posts_per_target=int(posts_per_target),
+            trigger=str(trigger or "manual"),
+            created_by=str(created_by or "user"),
+            job_type="simulate",
+            runner="simulate",
+            source_crawl_job_id=None,
+            crawl_source=crawl_source,
+        )
+
+    def analyze_project_async(
+        self,
+        *,
+        db_path: str,
+        con: sqlite3.Connection,
+        project_id: int,
+        source_crawl_job_id: int,
+        trigger: str,
+        created_by: str,
+    ) -> RefreshResult:
+        """
+        Start an analyze-only job for an existing batch of posts.
+        """
+        return self._start_job_async(
+            db_path=str(db_path),
+            con=con,
+            project_id=int(project_id),
+            stat_date=None,
+            posts_per_target=0,
+            trigger=str(trigger or "manual"),
+            created_by=str(created_by or "user"),
+            job_type="analysis",
+            runner="analyze",
+            source_crawl_job_id=int(source_crawl_job_id),
+        )
+
+    def _start_job_async(
+        self,
+        *,
+        db_path: str,
+        con: sqlite3.Connection,
+        project_id: int,
+        stat_date: Optional[str],
+        posts_per_target: int,
+        trigger: str,
+        created_by: str,
+        job_type: str,
+        runner: str,
+        source_crawl_job_id: Optional[int],
+        crawl_source: Optional[str] = None,
+    ) -> RefreshResult:
+        """
+        Shared async runner for project jobs.
+
+        runner:
+        - "refresh": full pipeline (generate + analysis + aggregate)
+        - "simulate": generate-only
+        - "analyze": analyze + aggregate for an existing source batch
+        """
+        stat_date_norm = parse_stat_date(stat_date)
+        pid = int(project_id)
+
+        with self._lock:
+            if pid in self._running_projects:
+                running_job_id = self._db_recent_running_job_id(con, pid)
+                return RefreshResult(
+                    project_id=pid,
+                    skipped=True,
+                    reason="in_memory_lock",
+                    crawl_job_id=int(running_job_id) if running_job_id is not None else None,
+                    stat_date=stat_date_norm,
+                )
+            self._running_projects.add(pid)
+            self._running_started_at[pid] = datetime.now()
+
+        running_job_id = self._db_recent_running_job_id(con, pid)
+        if running_job_id is not None:
+            with self._lock:
+                self._running_projects.discard(pid)
+                self._running_started_at.pop(pid, None)
+            return RefreshResult(
+                project_id=pid,
+                skipped=True,
+                reason="db_running",
+                crawl_job_id=int(running_job_id),
+                stat_date=stat_date_norm,
+            )
+
+        trigger_source = "scheduled" if trigger == "scheduled" else "manual"
+        schedule_type = "daily" if trigger == "scheduled" else "manual"
+        with con:
+            crawl_job_id = create_crawl_job(
+                con,
+                int(pid),
+                job_type=str(job_type or "manual"),
+                trigger_source=trigger_source,
+                schedule_type=schedule_type,
+                schedule_expr=None,
+                created_by=str(created_by or "user"),
+            )
+            mark_job_running(con, int(crawl_job_id))
+
+        def _con_db_path(c: sqlite3.Connection) -> Optional[str]:
+            try:
+                rows = c.execute("PRAGMA database_list;").fetchall()
+                for r in rows:
+                    if len(r) >= 3 and str(r[1]) == "main":
+                        v = str(r[2] or "").strip()
+                        return v or None
+            except Exception:
+                return None
+            return None
+
+        worker_db_path = _con_db_path(con) or str(db_path)
+
+        def _worker() -> None:
+            con2: Optional[sqlite3.Connection] = None
+            try:
+                con2 = connect(str(worker_db_path))
+                with con2:
+                    if runner == "refresh":
+                        run_pipeline_existing_job(
+                            con=con2,
+                            crawl_job_id=int(crawl_job_id),
+                            project_id=pid,
+                            stat_date=str(stat_date_norm),
+                            posts_per_target=int(posts_per_target),
+                        )
+                    elif runner == "simulate":
+                        run_simulate_existing_job(
+                            con=con2,
+                            crawl_job_id=int(crawl_job_id),
+                            project_id=pid,
+                            stat_date=str(stat_date_norm),
+                            posts_per_target=int(posts_per_target),
+                            crawl_source=crawl_source,
+                        )
+                    elif runner == "analyze":
+                        if source_crawl_job_id is None:
+                            raise ValueError("source_crawl_job_id is required for analyze")
+                        run_analyze_existing_job(
+                            con=con2,
+                            crawl_job_id=int(crawl_job_id),
+                            project_id=pid,
+                            source_crawl_job_id=int(source_crawl_job_id),
+                        )
+                    else:
+                        raise ValueError(f"unknown runner: {runner}")
+            except Exception as e:
+                log.exception("project job worker failed project_id=%s runner=%s", pid, runner)
+                try:
+                    if con2 is None:
+                        con2 = connect(str(worker_db_path))
+                    with con2:
+                        self._mark_job_failed_best_effort(
+                            con2,
+                            int(crawl_job_id),
+                            f"{type(e).__name__}: {e}",
+                        )
+                except Exception:
+                    pass
+            finally:
+                if con2 is not None:
+                    with suppress(Exception):
+                        con2.close()
+                with self._lock:
+                    self._running_projects.discard(pid)
+                    self._running_started_at.pop(pid, None)
+
+        t = threading.Thread(target=_worker, name=f"prodwatch-job-{runner}-{pid}", daemon=True)
         t.start()
 
         return RefreshResult(project_id=pid, skipped=False, stat_date=stat_date_norm, crawl_job_id=int(crawl_job_id))

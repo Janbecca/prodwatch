@@ -1,7 +1,7 @@
 <!-- 作用：前端组件：帖子模块组件（PostsFilters）。 -->
 
 <template>
-  <PageSection title="筛选">
+  <PageSection title="筛选" class="filters">
     <el-form :inline="true" label-width="110px">
       <el-form-item label="项目">
         <el-space wrap>
@@ -95,14 +95,7 @@
         </div>
       </el-form-item>
 
-      <el-form-item label="垃圾">
-        <el-select v-model="spamModel" style="width: 160px" :disabled="store.scopeLoading || !store.hasEnabledProject">
-          <!-- ElementPlus ElOption 不接受 null 作为 value，使用空字符串作为“全部”哨兵值，再在 computed 中映射为 null -->
-          <el-option label="全部" value="" />
-          <el-option label="垃圾" value="spam" />
-          <el-option label="正常" value="normal" />
-        </el-select>
-      </el-form-item>
+      <!-- 细节 1：删除“垃圾”筛选项（仍保留列表展示垃圾标签）。 -->
 
       <el-form-item label="有效">
         <el-select v-model="validModel" style="width: 160px" :disabled="store.scopeLoading || !store.hasEnabledProject">
@@ -147,10 +140,30 @@
       </el-form-item>
 
       <el-form-item>
-        <el-button type="primary" :loading="store.overviewLoading" :disabled="!store.hasEnabledProject" @click="store.runQuery()">
+        <el-button
+          type="primary"
+          :loading="store.overviewLoading"
+          :disabled="!store.hasEnabledProject"
+          @click="store.runQuery()"
+        >
           查询
         </el-button>
         <el-button :disabled="store.scopeLoading" @click="store.resetDraft()">重置</el-button>
+      </el-form-item>
+
+      <el-form-item>
+        <el-tooltip :disabled="!isRefreshing" content="项目正在处理任务中，请稍后再试" placement="top">
+          <el-space>
+            <el-button
+              :loading="isRefreshing"
+              type="primary"
+              :disabled="!store.hasEnabledProject || store.scopeLoading || isRefreshing"
+              @click="dashboard.manualRefresh()"
+            >
+              手动刷新{{ stageSuffix }}
+            </el-button>
+          </el-space>
+        </el-tooltip>
       </el-form-item>
     </el-form>
 
@@ -170,9 +183,13 @@ import { computed, watch } from 'vue'
 import PageSection from '../common/PageSection.vue'
 import { usePostsStore } from '../../stores/posts'
 import { useProjectsStore } from '../../stores/projects'
+import { useRefreshStore } from '../../stores/refresh'
+import { useDashboardStore } from '../../stores/dashboard'
 
 const store = usePostsStore()
 const projectsStore = useProjectsStore()
+const refreshStore = useRefreshStore()
+const dashboard = useDashboardStore()
 
 const enabledProjects = computed(() => {
   return (projectsStore.projects || []).filter((p) => Number(p?.is_active || 0) === 1)
@@ -185,7 +202,6 @@ const isActiveProjectEnabled = computed(() => {
   return pid != null && enabledProjectIds.value.has(pid)
 })
 
-// Keep Posts default consistent with Dashboard: if active project is not enabled, pick the first enabled one.
 watch(
   () => [projectsStore.activeProjectId, enabledProjects.value.map((p) => p.id).join(',')],
   () => {
@@ -201,13 +217,15 @@ const projectModel = computed({
   set: (v) => projectsStore.setActiveProject(v),
 })
 
-// UI <-> store 映射：避免在 <el-option> 上使用 null value，从而触发 ElementPlus 警告。
-const spamModel = computed({
-  get: () => (store.draft.spam == null ? '' : String(store.draft.spam)),
-  set: (v) => {
-    const s = String(v ?? '')
-    store.draft.spam = s === '' ? null : s
-  },
+const isRefreshing = computed(() => refreshStore.isRefreshing(projectsStore.activeProjectId))
+const stageSuffix = computed(() => {
+  const st = refreshStore.getState(projectsStore.activeProjectId)
+  const stage = String(st?.stage || '').trim().toLowerCase()
+  if (!isRefreshing.value) return ''
+  if (stage === 'simulate') return '（生成中）'
+  if (stage === 'analyze') return '（分析中）'
+  if (stage === 'aggregate') return '（聚合中）'
+  return '（处理中）'
 })
 
 const validModel = computed({
@@ -221,3 +239,14 @@ const validModel = computed({
   },
 })
 </script>
+
+<style scoped>
+.filters :deep(.el-form--inline) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+.filters :deep(.el-form--inline .el-form-item) {
+  margin-right: 12px;
+}
+</style>

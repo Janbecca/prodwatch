@@ -682,21 +682,34 @@ def llm_mock_generate_markdown(
     top_features: list[dict],
     competitor: list[dict],
     posts: dict[str, list[sqlite3.Row]],
+    cfg: Optional[ReportConfigResolved] = None,
 ) -> tuple[str, str]:
     title = report["title"] or "Report"
     start = report["data_start_date"]
     end = report["data_end_date"]
 
+    show_sentiment = bool(getattr(cfg, "include_sentiment", 1)) if cfg is not None else True
+    show_trend = bool(getattr(cfg, "include_trend", 1)) if cfg is not None else True
+    show_topics = bool(getattr(cfg, "include_topics", 1)) if cfg is not None else True
+    show_feature = bool(getattr(cfg, "include_feature_analysis", 1)) if cfg is not None else True
+    show_spam = bool(getattr(cfg, "include_spam", 1)) if cfg is not None else True
+    show_competitor = bool(getattr(cfg, "include_competitor_compare", 1)) if cfg is not None else True
+    show_strategy = bool(getattr(cfg, "include_strategy", 1)) if cfg is not None else True
+    # Some sections inherently depend on sentiment analysis results.
+    show_trend = bool(show_trend and show_sentiment)
+    show_competitor = bool(show_competitor and show_sentiment)
+
     def pct(x: float) -> str:
         return f"{x*100:.1f}%"
 
-    exec_lines = [
-        f"- Range: {start} ~ {end}",
-        f"- Total posts: {overview.get('total_post_count', 0)}",
-        f"- Negative rate: {pct(float(overview.get('negative_rate', 0.0)))}",
-        f"- Spam rate: {pct(float(overview.get('spam_rate', 0.0)))}",
-        f"- Avg sentiment score: {float(overview.get('weighted_avg_sentiment_score', 0.0)):.3f}",
-    ]
+    exec_lines: list[str] = []
+    exec_lines.append(f"- Range: {start} ~ {end}")
+    exec_lines.append(f"- Total posts: {overview.get('total_post_count', 0)}")
+    if show_sentiment:
+        exec_lines.append(f"- Negative rate: {pct(float(overview.get('negative_rate', 0.0)))}")
+        exec_lines.append(f"- Avg sentiment score: {float(overview.get('weighted_avg_sentiment_score', 0.0)):.3f}")
+    if show_spam:
+        exec_lines.append(f"- Spam rate: {pct(float(overview.get('spam_rate', 0.0)))}")
 
     trend_lines = []
     for d in trend:
@@ -709,27 +722,29 @@ def llm_mock_generate_markdown(
         topic_lines.append(f"- {t['topic']}: {t['hit_count']}")
 
     risk_lines = []
-    if top_features:
+    if show_feature and top_features:
         risk_lines.append("负面特征（Top）：")
         for f in top_features[:5]:
             risk_lines.append(f"- {f['feature_name']}: 负面={f['negative_count']}，提及={f['mention_count']}")
-    if top_topics:
+    if show_topics and top_topics:
         risk_lines.append("热点话题（Top）：")
         for t in top_topics[:5]:
             risk_lines.append(f"- {t['topic']}: 提及={t['hit_count']}")
 
     feedback_lines = []
-    for r in posts.get("popular", [])[:5]:
-        content = (r["content"] or "").strip().replace("\n", " ")
-        feedback_lines.append(
+    if show_strategy:
+        for r in posts.get("popular", [])[:5]:
+            content = (r["content"] or "").strip().replace("\n", " ")
+            feedback_lines.append(
             f"- (post_id={r['post_id']}) 点赞={r['like_count'] or 0} 情感={r['sentiment']}: {content[:120]}"
-        )
+            )
 
     competitor_lines = []
-    for c in competitor:
-        competitor_lines.append(
+    if show_competitor:
+        for c in competitor:
+            competitor_lines.append(
             f"- {c['brand_name']}: 总量={c['total_post_count']} 负面占比={pct(float(c['negative_rate']))} 情感得分={float(c['weighted_avg_sentiment_score']):.3f}"
-        )
+            )
 
     strategy_lines = [
         "- 优先修复负面提及最多的特征问题，并同步发布进展。",
@@ -737,39 +752,36 @@ def llm_mock_generate_markdown(
         "- 持续追踪情感得分与负面占比，出现异常波动时及时告警与复盘。",
     ]
 
-    md = "\n".join(
-        [
-            f"# {title}",
-            "",
-            "## 执行摘要",
-            *exec_lines,
-            "",
-            "## 舆情趋势",
-            *(trend_lines if trend_lines else ["- （暂无聚合数据）"]),
-            "",
-            "## 风险点",
-            *(risk_lines if risk_lines else ["- （暂无风险数据）"]),
-            "",
-            "## 关键用户反馈",
-            *(feedback_lines if feedback_lines else ["- （暂无帖子）"]),
-            "",
-            "## 竞品对比",
-            *(competitor_lines if competitor_lines else ["- （暂无竞品数据）"]),
-            "",
-            "## 策略建议",
-            *strategy_lines,
-            "",
-            "## 热点话题",
-            *(topic_lines if topic_lines else ["- （暂无话题数据）"]),
-            "",
-        ]
-    )
+    parts: list[str] = []
+    parts.extend([f"# {title}", "", "## 执行摘要", *exec_lines, ""])
 
-    summary = (
-        f"总帖子数={overview.get('total_post_count', 0)}，"
-        f"负面占比={pct(float(overview.get('negative_rate', 0.0)))}，"
-        f"垃圾占比={pct(float(overview.get('spam_rate', 0.0)))}"
-    )
+    if show_trend:
+        parts.extend(["## 舆情趋势", *(trend_lines if trend_lines else ["- （暂无聚合数据）"]), ""])
+
+    show_risk = bool(show_sentiment or show_spam or show_feature or show_topics)
+    if show_risk:
+        parts.extend(["## 风险点", *(risk_lines if risk_lines else ["- （暂无风险数据）"]), ""])
+
+    if show_strategy:
+        parts.extend(["## 关键用户反馈", *(feedback_lines if feedback_lines else ["- （暂无帖子）"]), ""])
+
+    if show_competitor:
+        parts.extend(["## 竞品对比", *(competitor_lines if competitor_lines else ["- （暂无竞品数据）"]), ""])
+
+    if show_strategy:
+        parts.extend(["## 策略建议", *strategy_lines, ""])
+
+    if show_topics:
+        parts.extend(["## 热点话题", *(topic_lines if topic_lines else ["- （暂无话题数据）"]), ""])
+
+    md = "\n".join(parts)
+
+    summary_parts = [f"总帖子数={overview.get('total_post_count', 0)}"]
+    if show_sentiment:
+        summary_parts.append(f"负面占比={pct(float(overview.get('negative_rate', 0.0)))}")
+    if show_spam:
+        summary_parts.append(f"垃圾占比={pct(float(overview.get('spam_rate', 0.0)))}")
+    summary = "，".join(summary_parts)
     return summary, md
 
 
@@ -808,6 +820,142 @@ def insert_report_evidence(
         """,
         (report_id, post_id, section_name, quote_reason, sentiment, spam_label, now_ts()),
     )
+
+DATASET_SECTION_NAME = "dataset"
+
+def _ensure_report_evidence_table(con: sqlite3.Connection) -> None:
+    try:
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS report_evidence (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              report_id INTEGER NOT NULL,
+              post_id INTEGER NOT NULL,
+              section_name TEXT,
+              quote_reason TEXT,
+              sentiment TEXT,
+              spam_label TEXT,
+              created_at DATETIME
+            );
+            """
+        )
+        con.execute("CREATE INDEX IF NOT EXISTS idx_report_evidence_report_id ON report_evidence(report_id);")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_report_evidence_post_id ON report_evidence(post_id);")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_report_evidence_report_section ON report_evidence(report_id, section_name);")
+    except Exception:
+        return
+
+
+def _safe_keywords(values: Optional[list[str]]) -> list[str]:
+    out: list[str] = []
+    seen = set()
+    for v in values or []:
+        s = str(v or "").strip()
+        if not s:
+            continue
+        if s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    return out
+
+
+def materialize_report_dataset_evidence(con: sqlite3.Connection, report_id: int) -> int:
+    """
+    Materialize the report's dataset into `report_evidence` (1 row per post).
+
+    Requirement:
+    - The report dataset is defined by the report's data range + report_config filters
+      (platform/brand/keyword).
+    - All matching posts must be stored as evidence for this report.
+    """
+    _ensure_report_evidence_table(con)
+    report = read_report(con, int(report_id))
+    cfg = read_report_config(con, int(report_id))
+
+    project_id = int(report["project_id"])
+    start = str(report["data_start_date"])
+    end = str(report["data_end_date"])
+
+    plat_sql, plat_params = _in_filter("pr.platform_id", cfg.platform_ids)
+    brand_sql, brand_params = _in_filter("pr.brand_id", cfg.brand_ids)
+
+    keywords = _safe_keywords(getattr(cfg, "keywords", None))
+    kw_sql = ""
+    kw_params: list[Any] = []
+    if keywords:
+        placeholders = ",".join(["?"] * len(keywords))
+        # Prefer `post_keyword_result` when available (pipeline output).
+        kw_sql = f" AND EXISTS (SELECT 1 FROM post_keyword_result pkr WHERE pkr.post_id=pr.id AND pkr.keyword IN ({placeholders}))"
+        kw_params = list(keywords)
+
+    ts = now_ts()
+    con.execute("DELETE FROM report_evidence WHERE report_id=?;", (int(report_id),))
+
+    sql = f"""
+        INSERT INTO report_evidence(
+          report_id, post_id, section_name, quote_reason, sentiment, spam_label, created_at
+        )
+        SELECT
+          ? AS report_id,
+          pr.id AS post_id,
+          ? AS section_name,
+          '' AS quote_reason,
+          ps.sentiment AS sentiment,
+          sp.spam_label AS spam_label,
+          ? AS created_at
+        FROM post_raw pr
+        LEFT JOIN post_clean_result pc ON pc.post_id=pr.id
+        LEFT JOIN post_sentiment_result ps ON ps.post_id=pr.id
+        LEFT JOIN post_spam_result sp ON sp.post_id=pr.id
+        WHERE pr.project_id=?
+          AND date(COALESCE(pr.publish_time, pr.crawled_at)) BETWEEN ? AND ?
+          {plat_sql}
+          {brand_sql}
+          {kw_sql}
+          AND COALESCE(pc.is_valid, 1)=1;
+    """
+
+    params: list[Any] = [
+        int(report_id),
+        DATASET_SECTION_NAME,
+        ts,
+        project_id,
+        start,
+        end,
+        *plat_params,
+        *brand_params,
+        *kw_params,
+    ]
+
+    try:
+        cur = con.execute(sql, params)
+        return int(cur.rowcount or 0)
+    except sqlite3.Error as e:
+        # If keyword table is missing, fall back to naive LIKE matching on post text.
+        msg = str(e).lower()
+        if keywords and ("no such table" in msg and "post_keyword_result" in msg):
+            like_clauses: list[str] = []
+            like_params: list[Any] = []
+            for kw in keywords:
+                like_clauses.append("(COALESCE(pr.title,'') LIKE ? OR COALESCE(pr.content,'') LIKE ?)")
+                like_params.extend([f"%{kw}%", f"%{kw}%"])
+            like_sql = " AND (" + " OR ".join(like_clauses) + ")" if like_clauses else ""
+            sql2 = sql.replace(kw_sql, like_sql)
+            params2 = [
+                int(report_id),
+                DATASET_SECTION_NAME,
+                ts,
+                project_id,
+                start,
+                end,
+                *plat_params,
+                *brand_params,
+                *like_params,
+            ]
+            cur2 = con.execute(sql2, params2)
+            return int(cur2.rowcount or 0)
+        raise
 
 
 def select_and_write_evidence(con: sqlite3.Connection, report_id: int, posts: dict[str, list[sqlite3.Row]]) -> None:
@@ -859,6 +1007,320 @@ def select_and_write_evidence(con: sqlite3.Connection, report_id: int, posts: di
         )
 
 
+def _date_axis(start: str, end: str) -> list[str]:
+    s = datetime.strptime(str(start), "%Y-%m-%d").date()
+    e = datetime.strptime(str(end), "%Y-%m-%d").date()
+    out: list[str] = []
+    cur = s
+    while cur <= e:
+        out.append(cur.strftime("%Y-%m-%d"))
+        cur = cur.fromordinal(cur.toordinal() + 1)
+    return out
+
+
+def fetch_evidence_overview_by_brand(con: sqlite3.Connection, report_id: int) -> list[dict[str, Any]]:
+    rows = con.execute(
+        """
+        SELECT
+          pr.brand_id AS brand_id,
+          COUNT(1) AS total_post_count,
+          SUM(CASE WHEN COALESCE(sp.spam_label,'')='spam' THEN 1 ELSE 0 END) AS spam_post_count,
+          SUM(CASE WHEN COALESCE(ps.sentiment,'')='positive' THEN 1 ELSE 0 END) AS positive_count,
+          SUM(CASE WHEN COALESCE(ps.sentiment,'')='neutral'  THEN 1 ELSE 0 END) AS neutral_count,
+          SUM(CASE WHEN COALESCE(ps.sentiment,'')='negative' THEN 1 ELSE 0 END) AS negative_count,
+          SUM(COALESCE(pr.like_count,0)) AS total_like_count,
+          SUM(COALESCE(pr.comment_count,0)) AS total_comment_count,
+          SUM(COALESCE(pr.share_count,0)) AS total_share_count,
+          AVG(COALESCE(ps.sentiment_score, 0.0)) AS avg_sentiment_score
+        FROM report_evidence re
+        JOIN post_raw pr ON pr.id=re.post_id
+        LEFT JOIN post_sentiment_result ps ON ps.post_id=pr.id
+        LEFT JOIN post_spam_result sp ON sp.post_id=pr.id
+        WHERE re.report_id=?
+          AND re.section_name=?
+        GROUP BY pr.brand_id
+        ORDER BY total_post_count DESC, pr.brand_id ASC;
+        """,
+        (int(report_id), DATASET_SECTION_NAME),
+    ).fetchall()
+
+    items: list[dict[str, Any]] = []
+    for r in rows:
+        total = int(r["total_post_count"] or 0)
+        spam = int(r["spam_post_count"] or 0)
+        items.append(
+            {
+                "brand_id": r["brand_id"],
+                "total_post_count": total,
+                "valid_post_count": total,
+                "spam_post_count": spam,
+                "spam_rate": (spam / total) if total else 0.0,
+                "positive_count": int(r["positive_count"] or 0),
+                "neutral_count": int(r["neutral_count"] or 0),
+                "negative_count": int(r["negative_count"] or 0),
+                "weighted_avg_sentiment_score": float(r["avg_sentiment_score"] or 0.0),
+                "keyword_hit_count": 0,
+                "total_like_count": int(r["total_like_count"] or 0),
+                "total_comment_count": int(r["total_comment_count"] or 0),
+                "total_share_count": int(r["total_share_count"] or 0),
+            }
+        )
+    return items
+
+
+def fetch_evidence_sentiment_trend_daily_by_brand(
+    con: sqlite3.Connection, report_id: int, *, top_n: int = 4
+) -> dict[str, Any]:
+    report = read_report(con, int(report_id))
+    start = str(report["data_start_date"])
+    end = str(report["data_end_date"])
+    dates = _date_axis(start, end)
+    if not dates:
+        return {"dates": [], "series": []}
+
+    top_rows = con.execute(
+        """
+        SELECT pr.brand_id AS brand_id, COUNT(1) AS total_post_count
+        FROM report_evidence re
+        JOIN post_raw pr ON pr.id=re.post_id
+        WHERE re.report_id=? AND re.section_name=?
+        GROUP BY pr.brand_id
+        ORDER BY total_post_count DESC, pr.brand_id ASC
+        LIMIT ?;
+        """,
+        (int(report_id), DATASET_SECTION_NAME, int(top_n)),
+    ).fetchall()
+    brand_ids = [int(r["brand_id"]) for r in top_rows if r["brand_id"] is not None]
+    if not brand_ids:
+        return {"dates": [], "series": []}
+
+    placeholders = ",".join(["?"] * len(brand_ids))
+    rows = con.execute(
+        f"""
+        SELECT
+          date(COALESCE(pr.publish_time, pr.crawled_at)) AS stat_date,
+          pr.brand_id AS brand_id,
+          COUNT(1) AS total_post_count,
+          SUM(CASE WHEN COALESCE(ps.sentiment,'')='positive' THEN 1 ELSE 0 END) AS positive_count,
+          SUM(CASE WHEN COALESCE(ps.sentiment,'')='negative' THEN 1 ELSE 0 END) AS negative_count
+        FROM report_evidence re
+        JOIN post_raw pr ON pr.id=re.post_id
+        LEFT JOIN post_sentiment_result ps ON ps.post_id=pr.id
+        WHERE re.report_id=? AND re.section_name=?
+          AND pr.brand_id IN ({placeholders})
+        GROUP BY stat_date, pr.brand_id
+        ORDER BY stat_date ASC, pr.brand_id ASC;
+        """,
+        (int(report_id), DATASET_SECTION_NAME, *brand_ids),
+    ).fetchall()
+
+    idx = {d: i for i, d in enumerate(dates)}
+    series_map: dict[int, dict[str, list[int]]] = {
+        bid: {
+            "total_post_count": [0] * len(dates),
+            "positive_count": [0] * len(dates),
+            "negative_count": [0] * len(dates),
+        }
+        for bid in brand_ids
+    }
+    for r in rows:
+        d = str(r["stat_date"])
+        bid = int(r["brand_id"])
+        i = idx.get(d)
+        if i is None or bid not in series_map:
+            continue
+        series_map[bid]["total_post_count"][i] = int(r["total_post_count"] or 0)
+        series_map[bid]["positive_count"][i] = int(r["positive_count"] or 0)
+        series_map[bid]["negative_count"][i] = int(r["negative_count"] or 0)
+
+    return {"dates": dates, "series": [{"brand_id": bid, **series_map[bid]} for bid in brand_ids]}
+
+
+def fetch_evidence_topic_monitor_stacked(
+    con: sqlite3.Connection, report_id: int, *, top_n: int = 15
+) -> dict[str, Any]:
+    report = read_report(con, int(report_id))
+    start = str(report["data_start_date"])
+    end = str(report["data_end_date"])
+    dates = _date_axis(start, end)
+    if not dates:
+        return {"dates": [], "series": []}
+
+    # Prefer topic_result when available.
+    try:
+        top_rows = con.execute(
+            """
+            SELECT tr.topic AS topic, COUNT(1) AS hit_count
+            FROM report_evidence re
+            JOIN topic_result tr ON tr.post_id=re.post_id
+            WHERE re.report_id=? AND re.section_name=?
+            GROUP BY tr.topic
+            ORDER BY hit_count DESC, tr.topic ASC
+            LIMIT ?;
+            """,
+            (int(report_id), DATASET_SECTION_NAME, int(top_n)),
+        ).fetchall()
+        topics = [str(r["topic"]) for r in top_rows if str(r["topic"] or "").strip() != ""]
+        if not topics:
+            return {"dates": [], "series": []}
+
+        placeholders = ",".join(["?"] * len(topics))
+        rows = con.execute(
+            f"""
+            SELECT
+              date(COALESCE(pr.publish_time, pr.crawled_at)) AS stat_date,
+              tr.topic AS topic,
+              COUNT(1) AS hit_count
+            FROM report_evidence re
+            JOIN post_raw pr ON pr.id=re.post_id
+            JOIN topic_result tr ON tr.post_id=re.post_id
+            WHERE re.report_id=? AND re.section_name=?
+              AND tr.topic IN ({placeholders})
+            GROUP BY stat_date, tr.topic
+            ORDER BY stat_date ASC, tr.topic ASC;
+            """,
+            (int(report_id), DATASET_SECTION_NAME, *topics),
+        ).fetchall()
+
+        idx = {d: i for i, d in enumerate(dates)}
+        series_map: dict[str, list[int]] = {tp: [0] * len(dates) for tp in topics}
+        for r in rows:
+            d = str(r["stat_date"])
+            tp = str(r["topic"])
+            if tp in series_map and d in idx:
+                series_map[tp][idx[d]] = int(r["hit_count"] or 0)
+        return {
+            "dates": dates,
+            "series": [{"keyword": tp, "data": series_map[tp]} for tp in topics],
+        }
+    except sqlite3.Error:
+        pass
+
+    # Fallback to keyword hits when topic tables are unavailable.
+    try:
+        top_rows = con.execute(
+            """
+            SELECT pkr.keyword AS keyword, COUNT(DISTINCT re.post_id) AS post_count
+            FROM report_evidence re
+            JOIN post_keyword_result pkr ON pkr.post_id=re.post_id
+            WHERE re.report_id=? AND re.section_name=?
+            GROUP BY pkr.keyword
+            ORDER BY post_count DESC, pkr.keyword ASC
+            LIMIT ?;
+            """,
+            (int(report_id), DATASET_SECTION_NAME, int(top_n)),
+        ).fetchall()
+        kws = [str(r["keyword"]) for r in top_rows if str(r["keyword"] or "").strip() != ""]
+        if not kws:
+            return {"dates": [], "series": []}
+        placeholders = ",".join(["?"] * len(kws))
+        rows = con.execute(
+            f"""
+            SELECT
+              date(COALESCE(pr.publish_time, pr.crawled_at)) AS stat_date,
+              pkr.keyword AS keyword,
+              COUNT(DISTINCT re.post_id) AS post_count
+            FROM report_evidence re
+            JOIN post_raw pr ON pr.id=re.post_id
+            JOIN post_keyword_result pkr ON pkr.post_id=re.post_id
+            WHERE re.report_id=? AND re.section_name=?
+              AND pkr.keyword IN ({placeholders})
+            GROUP BY stat_date, pkr.keyword
+            ORDER BY stat_date ASC, pkr.keyword ASC;
+            """,
+            (int(report_id), DATASET_SECTION_NAME, *kws),
+        ).fetchall()
+        idx = {d: i for i, d in enumerate(dates)}
+        series_map: dict[str, list[int]] = {kw: [0] * len(dates) for kw in kws}
+        for r in rows:
+            d = str(r["stat_date"])
+            kw = str(r["keyword"])
+            if kw in series_map and d in idx:
+                series_map[kw][idx[d]] = int(r["post_count"] or 0)
+        return {"dates": dates, "series": [{"keyword": kw, "data": series_map[kw]} for kw in kws]}
+    except sqlite3.Error:
+        return {"dates": [], "series": []}
+
+
+def fetch_evidence_risk_keywords(con: sqlite3.Connection, report_id: int, *, top_n: int = 20) -> list[dict[str, Any]]:
+    """
+    Risk board:
+    - keywords mentioned by negative-sentiment posts in this report evidence dataset.
+    """
+    try:
+        rows = con.execute(
+            f"""
+            SELECT
+              pkr.keyword AS keyword,
+              COUNT(DISTINCT re.post_id) AS post_count
+            FROM report_evidence re
+            JOIN post_sentiment_result ps ON ps.post_id=re.post_id
+            JOIN post_keyword_result pkr ON pkr.post_id=re.post_id
+            WHERE re.report_id=? AND re.section_name=?
+              AND COALESCE(ps.sentiment,'')='negative'
+            GROUP BY pkr.keyword
+            ORDER BY post_count DESC, pkr.keyword ASC
+            LIMIT ?;
+            """,
+            (int(report_id), DATASET_SECTION_NAME, int(top_n)),
+        ).fetchall()
+        return [{"keyword": r["keyword"], "post_count": int(r["post_count"] or 0)} for r in rows]
+    except sqlite3.Error:
+        return []
+
+
+def fetch_evidence_key_feedback_posts(
+    con: sqlite3.Connection, report_id: int, *, limit: int = 20, max_chars: int = 220
+) -> list[dict[str, Any]]:
+    rows = con.execute(
+        """
+        SELECT
+          pr.id AS post_id,
+          pr.platform_id,
+          pl.name AS platform_name,
+          pr.publish_time,
+          pr.title,
+          pr.content,
+          pr.post_url,
+          COALESCE(pr.like_count,0) AS like_count,
+          COALESCE(pr.comment_count,0) AS comment_count,
+          COALESCE(pr.share_count,0) AS share_count,
+          ps.sentiment AS sentiment
+        FROM report_evidence re
+        JOIN post_raw pr ON pr.id=re.post_id
+        LEFT JOIN platform pl ON pl.id=pr.platform_id
+        LEFT JOIN post_sentiment_result ps ON ps.post_id=pr.id
+        WHERE re.report_id=? AND re.section_name=?
+        ORDER BY (COALESCE(pr.like_count,0) + COALESCE(pr.comment_count,0) * 2 + COALESCE(pr.share_count,0) * 3) DESC, pr.id DESC
+        LIMIT ?;
+        """,
+        (int(report_id), DATASET_SECTION_NAME, int(limit)),
+    ).fetchall()
+
+    items: list[dict[str, Any]] = []
+    for r in rows:
+        content = str(r["content"] or "").strip().replace("\n", " ")
+        if len(content) > int(max_chars):
+            content = content[: int(max_chars)] + "..."
+        items.append(
+            {
+                "post_id": int(r["post_id"]),
+                "platform_id": int(r["platform_id"]) if r["platform_id"] is not None else None,
+                "platform_name": r["platform_name"],
+                "publish_time": r["publish_time"],
+                "title": r["title"],
+                "content_excerpt": content,
+                "post_url": r["post_url"],
+                "sentiment": r["sentiment"],
+                "like_count": int(r["like_count"] or 0),
+                "comment_count": int(r["comment_count"] or 0),
+                "share_count": int(r["share_count"] or 0),
+                "reason": "高互动",
+            }
+        )
+    return items
+
+
 def generate_report(con: sqlite3.Connection, report_id: int) -> dict[str, Any]:
     report = read_report(con, report_id)
     cfg = read_report_config(con, report_id)
@@ -884,6 +1346,7 @@ def generate_report(con: sqlite3.Connection, report_id: int) -> dict[str, Any]:
         top_features=top_features,
         competitor=competitor,
         posts=posts,
+        cfg=cfg,
     )
 
     update_report_content(con, report_id, summary, content_md)

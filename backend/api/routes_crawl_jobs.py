@@ -5,6 +5,8 @@ from __future__ import annotations
 import sqlite3
 from typing import Any, Optional
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from backend.api.db import get_db
@@ -71,6 +73,72 @@ def crawl_job_status(
             "finished_at": row["finished_at"],
             "error_message": row["error_message"],
             "trigger_type": trigger_type,
+            "job_type": row["job_type"],
+        },
+    }
+
+
+@router.get("/progress")
+def crawl_job_progress(
+    crawl_job_id: int = Query(..., ge=1),
+    db: sqlite3.Connection = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Real-time progress endpoint for long-running jobs (manual refresh).
+
+    Frontend uses this to display stage-level progress and log stage transitions.
+    """
+    try:
+        row = db.execute(
+            """
+            SELECT
+              crawl_job_id,
+              stage,
+              stage_started_at,
+              stage_updated_at,
+              message,
+              meta_json
+            FROM crawl_job_progress
+            WHERE crawl_job_id=?
+            LIMIT 1;
+            """,
+            (int(crawl_job_id),),
+        ).fetchone()
+    except sqlite3.Error:
+        row = None
+
+    if row is None:
+        # Backward/early compatibility: job exists but hasn't written progress yet.
+        # Return a stable shape so the frontend can keep polling.
+        return {
+            "ok": True,
+            "item": {
+                "crawl_job_id": int(crawl_job_id),
+                "stage": "unknown",
+                "stage_started_at": None,
+                "stage_updated_at": None,
+                "message": None,
+                "meta": None,
+            },
+        }
+
+    meta = None
+    try:
+        raw = row["meta_json"]
+        if raw:
+            meta = json.loads(str(raw))
+    except Exception:
+        meta = None
+
+    return {
+        "ok": True,
+        "item": {
+            "crawl_job_id": int(row["crawl_job_id"]),
+            "stage": row["stage"],
+            "stage_started_at": row["stage_started_at"],
+            "stage_updated_at": row["stage_updated_at"],
+            "message": row["message"],
+            "meta": meta,
         },
     }
 

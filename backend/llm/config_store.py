@@ -13,10 +13,8 @@ from backend.llm.file_task_config import get_llm_config_path, load_llm_tasks_fro
 # 系统支持的任务类型枚举
 DEFAULT_TASKS = [
     "crawler_generation",
-    "sentiment_analysis",
+    "post_analysis",
     "keyword_extraction",
-    "feature_extraction",
-    "spam_detection",
     "report_generation",
 ]
 

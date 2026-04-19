@@ -1,4 +1,4 @@
-<!-- 作用：前端组件：仪表盘模块组件（DashboardFilters）。 -->
+<!-- 作用：前端组件：仪表盘筛选与手动刷新按钮 -->
 
 <template>
   <PageSection title="筛选">
@@ -16,7 +16,7 @@
 
           <el-button v-if="!locked" :loading="store.loading" @click="store.fetchProjects()">重载</el-button>
 
-          <el-tag v-if="store.activeProject && isActiveProjectEnabled" type="info">项目编号：{{ store.activeProject.id }}</el-tag>
+          <el-tag v-if="store.activeProject && isActiveProjectEnabled" type="info">项目编号：#{{ store.activeProject.id }}</el-tag>
           <el-text v-else type="info">暂无启用项目</el-text>
           <el-text v-if="store.error" type="danger">{{ store.error }}</el-text>
         </el-space>
@@ -78,16 +78,16 @@
       <el-form-item>
         <el-tooltip
           :disabled="!isRefreshing"
-          content="项目正在刷新中，请稍后再操作"
+          content="项目正在处理任务中，请稍后再试"
           placement="top"
         >
           <el-button
-            :loading="dashboard.refreshLoading"
+            :loading="isRefreshing"
             type="primary"
-            :disabled="!hasEnabledProject || dashboard.refreshLoading || dashboard.scopeLoading || isRefreshing"
+            :disabled="!hasEnabledProject || dashboard.scopeLoading || isRefreshing"
             @click="dashboard.manualRefresh()"
           >
-            手动刷新
+            手动刷新{{ stageSuffix }}
           </el-button>
         </el-tooltip>
       </el-form-item>
@@ -155,6 +155,16 @@ const isActiveProjectEnabled = computed(() => {
 const hasEnabledProject = computed(() => enabledProjects.value.length > 0 && isActiveProjectEnabled.value)
 const isRefreshing = computed(() => refreshStore.isRefreshing(store.activeProjectId))
 
+const stageSuffix = computed(() => {
+  const st = refreshStore.getState(store.activeProjectId)
+  const stage = String(st?.stage || '').trim().toLowerCase()
+  if (!isRefreshing.value) return ''
+  if (stage === 'simulate') return '（生成中）'
+  if (stage === 'analyze') return '（分析中）'
+  if (stage === 'aggregate') return '（聚合中）'
+  return '（处理中）'
+})
+
 // If the current activeProjectId is not enabled, auto-select the first enabled project.
 watch(
   () => [store.activeProjectId, enabledProjects.value.map((p) => p.id).join(',')],
@@ -175,3 +185,4 @@ const projectModel = computed({
   },
 })
 </script>
+

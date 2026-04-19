@@ -1,0 +1,52 @@
+/* Global layout + responsive helpers */
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  overflow: hidden; /* prevent double scrollbars; pages scroll inside MainLayout */
+}
+
+/* Make ElementPlus tables never cause horizontal page overflow */
+.el-table {
+  max-width: 100%;
+}
+
+.pw-page {
+  min-height: 100%;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pw-page-fit {
+  height: 100%;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+.pw-grow {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Inline forms should wrap nicely on small screens */
+@media (max-width: 1024px) {
+  .el-form--inline .el-form-item {
+    margin-right: 12px;
+  }
+}
+
+@media (max-width: 768px) {
+  .el-form--inline .el-form-item {
+    margin-right: 0;
+  }
+}

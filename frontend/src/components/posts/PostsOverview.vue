@@ -18,7 +18,7 @@
       <el-empty v-else-if="!store.overview" description="暂无数据" />
 
       <el-row v-else :gutter="12">
-        <el-col v-for="c in cards" :key="c.key" :span="4">
+        <el-col v-for="c in cards" :key="c.key" :xs="12" :sm="8" :md="4">
           <el-card shadow="never" class="card">
             <el-text type="info">{{ c.label }}</el-text>
             <div class="val">{{ c.value }}</div>

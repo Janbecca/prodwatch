@@ -1,7 +1,7 @@
 <!-- 作用：前端页面：项目配置视图。 -->
 
 <template>
-  <el-space direction="vertical" :size="12" fill>
+  <div class="pw-page">
     <el-space wrap>
       <el-select
         v-model="projectModel"
@@ -72,7 +72,7 @@
         @refresh-meta="loadMetaOptions"
       />
     </template>
-  </el-space>
+  </div>
 </template>
 
 <script setup>

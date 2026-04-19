@@ -2,76 +2,76 @@
 
 <template>
   <PageSection title="帖子列表">
-    <el-alert
-      v-if="store.listError"
-      type="error"
-      :title="store.listError"
-      :closable="false"
-      show-icon
-      style="margin-bottom: 10px"
-    />
+      <el-alert
+        v-if="store.listError"
+        type="error"
+        :title="store.listError"
+        :closable="false"
+        show-icon
+        style="margin-bottom: 10px"
+      />
 
-    <el-table
-      v-loading="store.listLoading"
-      :data="tableRows"
-      border
-      style="width: 100%"
-      @row-click="onRowClick"
-    >
-      <el-table-column prop="id" label="编号" width="90" />
-      <el-table-column label="摘要" min-width="320">
-        <template #default="{ row }">
-          <div class="summary">
-            <div class="summary__title" v-if="row.title">{{ row.title }}</div>
-            <div class="summary__content">{{ row.summary }}</div>
-            <div v-if="row.analysisTags.length" class="summary__tags">
-              <el-space wrap size="small">
-                <el-tag v-for="t in row.analysisTags" :key="t.key" :type="t.type" size="small">
-                  {{ t.text }}
-                </el-tag>
+      <el-table
+        v-loading="store.listLoading"
+        :data="tableRows"
+        border
+        style="width: 100%"
+        @row-click="onRowClick"
+      >
+          <el-table-column prop="id" label="编号" width="90" />
+          <el-table-column label="摘要" min-width="320">
+            <template #default="{ row }">
+              <div class="summary">
+                <div class="summary__title" v-if="row.title">{{ row.title }}</div>
+                <div class="summary__content">{{ row.summary }}</div>
+                <div v-if="row.analysisTags.length" class="summary__tags">
+                  <el-space wrap size="small">
+                    <el-tag v-for="t in row.analysisTags" :key="t.key" :type="t.type" size="small">
+                      {{ t.text }}
+                    </el-tag>
+                  </el-space>
+                </div>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column prop="platformName" label="平台" width="110" />
+          <el-table-column prop="brandName" label="品牌" width="140" />
+          <el-table-column prop="publishTime" label="发布时间" width="150" />
+          <el-table-column label="关键词命中" min-width="200">
+            <template #default="{ row }">
+              <el-space wrap>
+                <el-tag v-for="k in row.keywords" :key="k" size="small">{{ k }}</el-tag>
               </el-space>
-            </div>
-          </div>
-        </template>
-      </el-table-column>
-      <el-table-column prop="platformName" label="平台" width="110" />
-      <el-table-column prop="brandName" label="品牌" width="140" />
-      <el-table-column prop="publishTime" label="发布时间" width="150" />
-      <el-table-column label="关键词命中" min-width="200">
-        <template #default="{ row }">
-          <el-space wrap>
-            <el-tag v-for="k in row.keywords" :key="k" size="small">{{ k }}</el-tag>
-          </el-space>
-        </template>
-      </el-table-column>
-      <el-table-column prop="likeCount" label="点赞" width="90" />
-      <el-table-column prop="commentCount" label="评论" width="100" />
-      <el-table-column prop="shareCount" label="分享" width="90" />
-      <el-table-column prop="viewCount" label="浏览" width="90" />
-      <el-table-column label="情感" width="120">
-        <template #default="{ row }">
-          <el-tag :type="sentimentType(row.sentiment)" size="small">{{ sentimentText(row.sentiment) }}</el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column prop="sentimentScore" label="分数" width="90" />
-      <el-table-column prop="emotionIntensity" label="强度" width="110" />
-      <el-table-column label="垃圾" width="90">
-        <template #default="{ row }">
-          <el-tag :type="row.spamLabel === 'spam' ? 'danger' : 'info'" size="small">{{ spamText(row.spamLabel) }}</el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="有效" width="90">
-        <template #default="{ row }">
-          <el-tag :type="row.isValid === 1 ? 'success' : row.isValid === 0 ? 'warning' : 'info'" size="small">
-            {{ row.isValid === 1 ? '有效' : row.isValid === 0 ? '无效' : '-' }}
-          </el-tag>
-        </template>
-      </el-table-column>
-    </el-table>
+            </template>
+          </el-table-column>
+          <el-table-column prop="likeCount" label="点赞" width="90" />
+          <el-table-column prop="commentCount" label="评论" width="100" />
+          <el-table-column prop="shareCount" label="分享" width="90" />
+          <el-table-column prop="viewCount" label="浏览" width="90" />
+          <el-table-column label="情感" width="120">
+            <template #default="{ row }">
+              <el-tag :type="sentimentType(row.sentiment)" size="small">{{ sentimentText(row.sentiment) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="sentimentScore" label="分数" width="90" />
+          <el-table-column prop="emotionIntensity" label="强度" width="110" />
+          <el-table-column label="垃圾" width="90">
+            <template #default="{ row }">
+              <el-tag :type="row.spamLabel === 'spam' ? 'danger' : 'info'" size="small">{{ spamText(row.spamLabel) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="有效" width="90">
+            <template #default="{ row }">
+              <el-tag :type="row.isValid === 1 ? 'success' : row.isValid === 0 ? 'warning' : 'info'" size="small">
+                {{ row.isValid === 1 ? '有效' : row.isValid === 0 ? '无效' : '-' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+      </el-table>
 
-    <div style="margin-top: 10px">
-      <PostsPagination />
-    </div>
+      <div class="pager">
+        <PostsPagination />
+      </div>
   </PageSection>
 </template>
 
@@ -119,7 +119,7 @@ function takeTextList(v, limit = 6) {
 function truncate(s, n = 120) {
   const t = trimText(s)
   if (t.length <= n) return t
-  return `${t.slice(0, n)}…`
+  return t.slice(0, n) + '…'
 }
 
 function sentimentType(s) {
@@ -168,6 +168,7 @@ const tableRows = computed(() => {
     for (const tp of topics) analysisTags.push({ key: `t:${tp}`, type: 'success', text: `话题: ${tp}` })
     for (const en of entities) analysisTags.push({ key: `e:${en}`, type: 'info', text: `实体: ${en}` })
     for (const is of issues) analysisTags.push({ key: `i:${is}`, type: 'warning', text: `问题: ${is}` })
+
     return {
       raw: it,
       id,
@@ -197,6 +198,9 @@ function onRowClick(row) {
 </script>
 
 <style scoped>
+.pager {
+  margin-top: 10px;
+}
 .summary__title {
   font-weight: 700;
   margin-bottom: 4px;

@@ -1,14 +1,14 @@
 <!-- 作用：前端页面：帖子列表视图。 -->
 
 <template>
-  <el-space direction="vertical" :size="12" fill>
+  <div class="pw-page">
     <el-empty v-if="!hasProjects" description="暂无启用项目" />
     <template v-else>
       <PostsFilters />
       <PostsOverview />
       <PostsListTable />
     </template>
-  </el-space>
+  </div>
 
   <PostDetailDrawer />
 </template>

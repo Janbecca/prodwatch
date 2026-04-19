@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
+from datetime import datetime
+import json
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -10,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from backend.api.db import get_db_relaxed
 from backend.llm.config_store import get_llm_config_store
+from backend.llm.prompts.store import get_prompt_store
 from backend.llm.provider_factory import get_provider_factory
 from backend.llm.types import LLMTaskConfig
 
@@ -18,7 +22,7 @@ router = APIRouter(prefix="/api/llm", tags=["llm"])
 
 
 TASKS = [
-    {"task_type": "crawler_generation", "title": "帖子生成（模拟爬虫）"},
+    {"task_type": "crawler_generation", "title": "舆情爬取"},
     {"task_type": "post_analysis", "title": "帖子分析"},
     {"task_type": "report_generation", "title": "报告生成"},
 ]
@@ -176,4 +180,200 @@ def put_config(payload: PutLLMConfigRequest, db: sqlite3.Connection = Depends(ge
 
     db.commit()
     return get_config(db)
+
+
+def _prompt_template_path(task_type: str) -> Path:
+    base = Path(__file__).resolve().parents[1] / "llm" / "prompts" / "templates"
+    return base / f"{str(task_type)}.json"
+
+
+def _iso_local(ts: float) -> str:
+    try:
+        return datetime.fromtimestamp(float(ts)).astimezone().isoformat(timespec="seconds")
+    except Exception:
+        return ""
+
+
+class PromptTemplateDTO(BaseModel):
+    task_type: str
+    version: str
+    template: str
+    updated_at: Optional[str] = None
+
+
+class PutPromptTemplateRequest(BaseModel):
+    """
+    Only allow editing the "prompt" section. Output/Input JSON sections are kept read-only.
+
+    Backward compatibility:
+    - If prompt is not provided, `template` is accepted as the prompt text.
+    - `version` is ignored; backend will auto-bump based on current version.
+    """
+
+    prompt: Optional[str] = None
+    template: Optional[str] = None
+    version: Optional[str] = None
+
+
+_TAG_OUT_START = "[OUTPUT_JSON]"
+_TAG_OUT_END = "[/OUTPUT_JSON]"
+_TAG_IN_START = "[INPUT_JSON]"
+_TAG_IN_END = "[/INPUT_JSON]"
+_TAG_PROMPT_START = "[PROMPT]"
+_TAG_PROMPT_END = "[/PROMPT]"
+
+
+def _split_template_sections(template: str) -> tuple[str, str, str]:
+    s = str(template or "")
+    try:
+        o1 = s.index(_TAG_OUT_START) + len(_TAG_OUT_START)
+        o2 = s.index(_TAG_OUT_END, o1)
+        i1 = s.index(_TAG_IN_START, o2) + len(_TAG_IN_START)
+        i2 = s.index(_TAG_IN_END, i1)
+        p1 = s.index(_TAG_PROMPT_START, i2) + len(_TAG_PROMPT_START)
+        p2 = s.index(_TAG_PROMPT_END, p1)
+        out_json = s[o1:o2].strip("\n")
+        in_json = s[i1:i2].strip("\n")
+        prompt = s[p1:p2].strip("\n")
+        return out_json, in_json, prompt
+    except Exception:
+        # Backward compatible fallback: treat entire template as prompt
+        return "", "", s.strip("\n")
+
+
+def _join_template_sections(*, output_json: str, input_json: str, prompt: str) -> str:
+    return (
+        f"{_TAG_OUT_START}\n{str(output_json or '').strip()}\n{_TAG_OUT_END}\n\n"
+        f"{_TAG_IN_START}\n{str(input_json or '').strip()}\n{_TAG_IN_END}\n\n"
+        f"{_TAG_PROMPT_START}\n{str(prompt or '').strip()}\n{_TAG_PROMPT_END}\n"
+    )
+
+
+def _bump_version(v: str) -> str:
+    raw = str(v or "").strip()
+    if raw == "":
+        return "v1"
+    # Prefer "vN" format, but be tolerant.
+    import re
+
+    m = re.search(r"(.*?)(\d+)(\D*)$", raw)
+    if not m:
+        # no number -> start at v1
+        return "v1"
+    prefix, num, suffix = m.group(1), m.group(2), m.group(3)
+    try:
+        n = int(num)
+        return f"{prefix}{n + 1}{suffix}"
+    except Exception:
+        return "v1"
+
+
+@router.get("/prompts")
+def get_prompts() -> dict[str, Any]:
+    """
+    Return prompt templates that the backend will actually use (PromptStore).
+
+    Note: updated_at is derived from the on-disk template file mtime (not stored in JSON).
+    """
+    store = get_prompt_store()
+
+    # Return all existing file templates + known task types.
+    base_dir = _prompt_template_path("x").parent
+    file_types: list[str] = []
+    try:
+        if base_dir.exists():
+            for p in base_dir.glob("*.json"):
+                file_types.append(p.stem)
+    except Exception:
+        file_types = []
+
+    task_types = []
+    seen = set()
+    for t in (file_types + [str(t["task_type"]) for t in TASKS]):
+        tt = str(t or "").strip()
+        if not tt or tt in seen:
+            continue
+        seen.add(tt)
+        task_types.append(tt)
+
+    items: list[dict[str, Any]] = []
+    for task_type in task_types:
+        pt = store.get(task_type)
+        path = _prompt_template_path(task_type)
+        updated_at = _iso_local(path.stat().st_mtime) if path.exists() else None
+        items.append(
+            {
+                "task_type": str(pt.task_type),
+                "version": str(pt.version),
+                "template": str(pt.template),
+                "updated_at": updated_at,
+            }
+        )
+
+    return {"items": items}
+
+
+@router.put("/prompts/{task_type}")
+def put_prompt(task_type: str, payload: PutPromptTemplateRequest) -> dict[str, Any]:
+    """
+    Update file-based prompt template:
+      backend/llm/prompts/templates/<task_type>.json
+
+    JSON file format is stable and must NOT change:
+      { "task_type": "...", "version": "...", "template": "..." }
+    """
+    tt = str(task_type or "").strip()
+    # Allow editing:
+    # - known LLM tasks (TASKS), and
+    # - any existing file-based templates under backend/llm/prompts/templates/*.json
+    allowed_tasks = {str(t["task_type"]) for t in TASKS}
+    path = _prompt_template_path(tt)
+    if tt not in allowed_tasks and (not path.exists()):
+        raise HTTPException(status_code=400, detail=f"unknown task_type: {tt}")
+
+    # Only allow editing prompt section. Ignore any incoming version.
+    prompt = payload.prompt if payload.prompt is not None else payload.template
+    prompt = "" if prompt is None else str(prompt)
+    if str(prompt).strip() == "":
+        raise HTTPException(status_code=400, detail="prompt must not be empty")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Load current template on disk to keep read-only sections stable.
+    # If missing, fall back to PromptStore's current template.
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            existing = {}
+        cur_version = str(existing.get("version") or "").strip()
+        cur_template = str(existing.get("template") or "")
+    else:
+        pt0 = get_prompt_store().get(tt)
+        cur_version = str(pt0.version or "").strip()
+        cur_template = str(pt0.template or "")
+
+    out_json, in_json, _old_prompt = _split_template_sections(cur_template)
+    new_template = _join_template_sections(output_json=out_json, input_json=in_json, prompt=prompt)
+    new_version = _bump_version(cur_version)
+
+    data = {"task_type": tt, "version": new_version, "template": new_template}
+    try:
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"failed to write prompt template: {e}")
+
+    # Ensure runtime router uses the latest version.
+    store = get_prompt_store()
+    store.invalidate(tt)
+    pt = store.get(tt)
+    updated_at = _iso_local(path.stat().st_mtime) if path.exists() else None
+    return {
+        "item": {
+            "task_type": str(pt.task_type),
+            "version": str(pt.version),
+            "template": str(pt.template),
+            "updated_at": updated_at,
+        }
+    }
 

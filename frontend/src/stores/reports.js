@@ -269,7 +269,8 @@ export const useReportsStore = defineStore('reports', () => {
 
       const status = String(res?.status || '')
       if (status === 'failed') {
-        ElMessage.error(`报告已创建但生成失败（#${rid}）`)
+        const msg = String(res?.error_message || '').trim()
+        ElMessage.error(msg ? `报告已创建但生成失败：${msg}` : `报告已创建但生成失败（#${rid}）`)
       } else if (status === 'success' || status === 'done') {
         ElMessage.success(`已创建并生成报告 #${rid}`)
       } else {

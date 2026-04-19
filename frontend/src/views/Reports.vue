@@ -1,13 +1,13 @@
 <!-- 作用：前端页面：报告列表视图。 -->
 
 <template>
-  <el-space direction="vertical" :size="12" fill>
+  <div class="pw-page-fit">
     <el-empty v-if="!hasProjects" description="暂无启用项目" />
     <template v-else>
       <ReportsFilters @open-create="openCreate" />
-      <ReportsTable />
+      <div class="pw-grow"><ReportsTable /></div>
     </template>
-  </el-space>
+  </div>
 
   <ReportCreateDrawer />
   <ReportDetailDrawer />

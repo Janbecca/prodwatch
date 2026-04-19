@@ -174,7 +174,15 @@ export const useDashboardStore = defineStore('dashboard', () => {
         return null
       }
 
-      const res = await manualRefreshProject(pid, {})
+      // First version: always prefer real crawl (external MediaCrawler) on manual refresh.
+      // Keep API backward compatible: backend defaults to mock_llm if this field is omitted.
+      const crawlSource = import.meta.env.VITE_MANUAL_REFRESH_CRAWL_SOURCE || 'media_crawler'
+      try {
+        console.info('[prodwatch] manual refresh request:', { project_id: pid, crawl_source: crawlSource })
+      } catch {
+        // ignore
+      }
+      const res = await manualRefreshProject(pid, { crawl_source: crawlSource })
       // Request returned quickly (refresh runs in background). Clear optimistic window;
       // /refresh/status polling decides final state.
       refreshStore.clearOptimistic(pid)
@@ -282,6 +290,16 @@ export const useDashboardStore = defineStore('dashboard', () => {
             const res = await fetchCrawlJobStatus(cur.jobId)
             const item = res?.item || null
             const st = String(item?.status || '')
+            const jobType = String(item?.job_type || '').trim().toLowerCase()
+            if (jobType === 'simulate' || jobType === 'analysis') {
+              const op = jobType === 'simulate' ? '\u6a21\u62df\u751f\u6210' : '\u5206\u6790'
+              if (st === 'failed') {
+                ElMessage.error(`${op}\u5931\u8d25\uff08\u4efb\u52a1\u7f16\u53f7=${cur.jobId}\uff09\uff1a${item?.error_message || '\u672a\u77e5\u539f\u56e0'}`)
+              } else {
+                ElMessage.success(`${op}\u5b8c\u6210\uff08\u4efb\u52a1\u7f16\u53f7=${cur.jobId}\uff09`)
+              }
+              return
+            }
             if (st === 'failed') {
               try {
                 console.error('[prodwatch] manual refresh failed:', {

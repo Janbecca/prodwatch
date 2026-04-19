@@ -23,7 +23,13 @@ class QwenProvider:
         base_url = os.environ.get("PRODWATCH_QWEN_BASE_URL") or os.environ.get("QWEN_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1"
         model = req.model or os.environ.get("PRODWATCH_QWEN_MODEL") or os.environ.get("QWEN_MODEL") or "qwen-plus"
         task_key = str(getattr(req, "task_type", "") or "").strip().upper()
-        timeout_default = "60" if str(getattr(req, "task_type", "") or "") == "crawler_generation" else "25"
+        task_type = str(getattr(req, "task_type", "") or "")
+        if task_type == "crawler_generation":
+            timeout_default = "60"
+        elif task_type == "report_generation":
+            timeout_default = "60"
+        else:
+            timeout_default = "25"
         timeout_s = float(os.environ.get(f"PRODWATCH_LLM_TIMEOUT_S_{task_key}") or os.environ.get("PRODWATCH_LLM_TIMEOUT_S") or timeout_default)
         max_retries = int(os.environ.get(f"PRODWATCH_LLM_MAX_RETRIES_{task_key}") or os.environ.get("PRODWATCH_LLM_MAX_RETRIES") or "2")
         if not api_key:
@@ -115,6 +121,11 @@ class QwenProvider:
             return {
                 "summary": str(parsed.get("summary") or ""),
                 "executive_summary_md": md_block(parsed.get("executive_summary_md")),
+                "trend_summary_md": md_block(parsed.get("trend_summary_md")),
+                "risk_points_md": md_block(parsed.get("risk_points_md")),
+                "key_user_feedback_md": md_block(parsed.get("key_user_feedback_md")),
+                "competitor_compare_md": md_block(parsed.get("competitor_compare_md")),
+                "hot_topics_md": md_block(parsed.get("hot_topics_md")),
                 "strategy_suggestions_md": md_block(parsed.get("strategy_suggestions_md")),
                 "content_markdown": str(parsed.get("content_markdown") or ""),
             }

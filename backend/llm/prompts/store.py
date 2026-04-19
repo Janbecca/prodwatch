@@ -30,6 +30,19 @@ class PromptStore:
         self.base_dir = base_dir or (Path(__file__).resolve().parent / "templates")
         self._cache: dict[str, PromptTemplate] = {}
 
+    def invalidate(self, task_type: str) -> None:
+        """
+        Invalidate cached prompt template for a task_type.
+
+        Needed when templates are edited on disk at runtime so the router uses the latest version.
+        """
+        t = str(task_type or "")
+        self._cache.pop(t, None)
+
+    def clear(self) -> None:
+        """Clear all cached prompt templates."""
+        self._cache.clear()
+
     def get(self, task_type: str) -> PromptTemplate:
         t = str(task_type)
         if t in self._cache:

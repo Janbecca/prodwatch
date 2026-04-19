@@ -27,7 +27,14 @@ class DeepSeekProvider:
         # - PRODWATCH_LLM_TIMEOUT_S_<TASK_TYPE> (uppercased)
         # - PRODWATCH_LLM_MAX_RETRIES_<TASK_TYPE> (uppercased)
         task_key = str(getattr(req, "task_type", "") or "").strip().upper()
-        timeout_default = "60" if str(getattr(req, "task_type", "") or "") == "crawler_generation" else "25"
+        task_type = str(getattr(req, "task_type", "") or "")
+        if task_type == "crawler_generation":
+            timeout_default = "60"
+        elif task_type == "report_generation":
+            # Report generation can be slower due to larger prompts + JSON parsing.
+            timeout_default = "60"
+        else:
+            timeout_default = "25"
         timeout_s = float(os.environ.get(f"PRODWATCH_LLM_TIMEOUT_S_{task_key}") or os.environ.get("PRODWATCH_LLM_TIMEOUT_S") or timeout_default)
         max_retries = int(os.environ.get(f"PRODWATCH_LLM_MAX_RETRIES_{task_key}") or os.environ.get("PRODWATCH_LLM_MAX_RETRIES") or "2")
         if not api_key:
@@ -120,8 +127,13 @@ class DeepSeekProvider:
         if t == "report_generation":
             return {
                 "summary": str(parsed.get("summary") or ""),
-                # v2: incremental blocks (preferred)
+                # incremental blocks (frontend renders boards separately)
                 "executive_summary_md": md_block(parsed.get("executive_summary_md")),
+                "trend_summary_md": md_block(parsed.get("trend_summary_md")),
+                "risk_points_md": md_block(parsed.get("risk_points_md")),
+                "key_user_feedback_md": md_block(parsed.get("key_user_feedback_md")),
+                "competitor_compare_md": md_block(parsed.get("competitor_compare_md")),
+                "hot_topics_md": md_block(parsed.get("hot_topics_md")),
                 "strategy_suggestions_md": md_block(parsed.get("strategy_suggestions_md")),
                 # v1 compatibility (some providers/users may still return full markdown)
                 "content_markdown": str(parsed.get("content_markdown") or ""),

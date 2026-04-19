@@ -1,57 +1,60 @@
 <!-- 作用：前端组件：报告模块组件（ReportsTable）。 -->
 
 <template>
-  <PageSection title="报告列表">
-    <el-alert
-      v-if="store.error"
-      type="error"
-      :title="store.error"
-      :closable="false"
-      show-icon
-      style="margin-bottom: 10px"
-    />
+  <PageSection title="报告列表" class="table-section">
+    <div class="body">
+      <el-alert
+        v-if="store.error"
+        type="error"
+        :title="store.error"
+        :closable="false"
+        show-icon
+        style="margin-bottom: 10px"
+      />
 
-    <el-empty v-if="!store.queried && !store.loading" description="点击“查询”加载报告列表" />
+      <div class="table-area">
+        <el-empty v-if="!store.queried && !store.loading" description="点击“查询”加载报告列表" />
 
-    <el-table
-      v-else
-      v-loading="store.loading"
-      :data="rows"
-      border
-      style="width: 100%"
-      @row-dblclick="(row) => store.openDetail(row.raw)"
-    >
-      <el-table-column prop="title" label="标题" min-width="240" show-overflow-tooltip />
-      <el-table-column prop="type" label="类型" width="110">
-        <template #default="{ row }">
-          <el-tag size="small" type="info">{{ row.type }}</el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column prop="projectName" label="项目" width="160" show-overflow-tooltip />
-      <el-table-column prop="dataRange" label="数据范围" width="210" />
-      <el-table-column prop="createdAt" label="创建时间" width="170" />
-      <el-table-column prop="summary" label="摘要" min-width="220" show-overflow-tooltip />
-      <el-table-column prop="status" label="状态" width="120">
-        <template #default="{ row }">
-          <el-tag :type="statusType(row.status)" size="small">{{ row.statusLabel }}</el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="操作" width="440" fixed="right">
-        <template #default="{ row }">
-          <el-button size="small" type="primary" plain @click="goDetail(row.raw)">详情</el-button>
-          <el-button size="small" type="success" plain :disabled="row.status === 'running'" @click="store.onGenerate(row.raw)">
-            生成
-          </el-button>
-          <el-button size="small" plain @click="store.onEvidence(row.raw)">证据</el-button>
-          <el-button size="small" plain @click="store.onExport(row.raw)">导出</el-button>
-          <el-button size="small" type="success" plain @click="store.onCopyGenerate(row.raw)">复制</el-button>
-          <el-button size="small" type="danger" plain @click="store.onDelete(row.raw)">删除</el-button>
-        </template>
-      </el-table-column>
-    </el-table>
+        <el-table
+          v-else
+          v-loading="store.loading"
+          :data="rows"
+          border
+          style="width: 100%"
+          height="100%"
+          @row-dblclick="(row) => store.openDetail(row.raw)"
+        >
+          <el-table-column prop="title" label="标题" min-width="240" show-overflow-tooltip />
+          <el-table-column prop="type" label="类型" width="110">
+            <template #default="{ row }">
+              <el-tag size="small" type="info">{{ row.type }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="projectName" label="项目" width="160" show-overflow-tooltip />
+          <el-table-column prop="dataRange" label="数据范围" width="210" />
+          <el-table-column prop="createdAt" label="创建时间" width="170" />
+          <el-table-column prop="summary" label="摘要" min-width="220" show-overflow-tooltip />
+          <el-table-column prop="status" label="状态" width="120">
+            <template #default="{ row }">
+              <el-tag :type="statusType(row.status)" size="small">{{ row.statusLabel }}</el-tag>
+            </template>
+          </el-table-column>
 
-    <div class="pager">
-      <ReportsPagination />
+          <el-table-column label="操作" width="360" fixed="right">
+            <template #default="{ row }">
+              <el-button size="small" type="primary" plain @click="goDetail(row.raw)">详情</el-button>
+              <el-button size="small" plain @click="store.onEvidence(row.raw)">证据</el-button>
+              <el-button size="small" plain @click="store.onExport(row.raw)">导出</el-button>
+              <el-button size="small" type="success" plain @click="store.onCopyGenerate(row.raw)">复制生成</el-button>
+              <el-button size="small" type="danger" plain @click="store.onDelete(row.raw)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+
+      <div class="pager">
+        <ReportsPagination />
+      </div>
     </div>
   </PageSection>
 </template>
@@ -73,7 +76,7 @@ function trimText(s) {
 function truncate(s, n = 120) {
   const t = trimText(s)
   if (t.length <= n) return t
-  return `${t.slice(0, n)}…`
+  return t.slice(0, n) + '…'
 }
 
 function fmtRange(a, b) {
@@ -139,9 +142,31 @@ function goDetail(raw) {
 </script>
 
 <style scoped>
+.table-section {
+  height: 100%;
+}
+.body {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.table-area {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.table-area :deep(.el-empty) {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
 .pager {
   margin-top: 12px;
   display: flex;
   justify-content: flex-end;
 }
 </style>
+

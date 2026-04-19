@@ -6,7 +6,6 @@ import argparse
 import hashlib
 import json
 import logging
-import math
 import os
 import re
 import sqlite3
@@ -37,6 +36,7 @@ from backend.storage.analysis_store import (
     insert_topic_results,
     upsert_analysis_result,
 )
+from backend.storage.crawl_job_progress_store import upsert_crawl_job_progress
 
 
 DB_DEFAULT_PATH = "backend/database/database.sqlite"
@@ -111,6 +111,17 @@ def sha1_hex(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()
 
 
+def normalize_crawl_source(value: Optional[str]) -> str:
+    v = str(value or "").strip().lower()
+    if v in ("media_crawler", "mediacrawler", "media-crawler"):
+        return "media_crawler"
+    return "mock_llm"
+
+
+def default_crawl_source() -> str:
+    return normalize_crawl_source(os.environ.get("PRODWATCH_CRAWL_SOURCE"))
+
+
 def fetch_one_int(con: sqlite3.Connection, sql: str, params: tuple[Any, ...]) -> Optional[int]:
     row = con.execute(sql, params).fetchone()
     if not row:
@@ -130,6 +141,7 @@ def bootstrap_if_empty(con: sqlite3.Connection) -> int:
         ("weibo", "Weibo"),
         ("zhihu", "Zhihu"),
         ("douyin", "Douyin"),
+        ("xhs", "小红书"),
     ]
     for code, name in platforms:
         con.execute(
@@ -493,8 +505,71 @@ def build_post_candidates(
     targets: list[CrawlTarget],
     stat_date: str,
     posts_per_target: int,
+    crawl_source: str = "mock_llm",
 ) -> list[PostCandidate]:
-    # Realism-oriented generator (distribution_plan -> seeds -> batch generation).
+    crawl_source = normalize_crawl_source(crawl_source)
+    if crawl_source == "media_crawler":
+        # First version: only XHS uses the real crawler; other platforms fall back to mock LLM generation.
+        import logging
+
+        log = logging.getLogger("prodwatch.pipeline")
+        platform_rows = con.execute("SELECT id, code FROM platform;").fetchall()
+        platform_code_map = {int(r["id"]): str(r["code"] or "").strip().lower() for r in platform_rows}
+
+        xhs_targets: list[CrawlTarget] = []
+        other_targets: list[CrawlTarget] = []
+        for t in targets or []:
+            code = platform_code_map.get(int(t.platform_id), "")
+            if code in ("xhs", "xiaohongshu", "rednote"):
+                xhs_targets.append(t)
+            else:
+                other_targets.append(t)
+
+        candidates: list[PostCandidate] = []
+        if xhs_targets:
+            try:
+                candidates.extend(
+                    _build_post_candidates_media_crawler(
+                        con,
+                        project_id,
+                        crawl_job_id,
+                        xhs_targets,
+                        stat_date,
+                        posts_per_target,
+                    )
+                )
+            except Exception:
+                try:
+                    upsert_crawl_job_progress(
+                        con,
+                        crawl_job_id=int(crawl_job_id),
+                        stage="simulate",
+                        message="media_crawler failed; fallback to mock_llm",
+                        meta={"crawl_source": "media_crawler", "fallback": "mock_llm"},
+                    )
+                    con.commit()
+                except Exception:
+                    pass
+                log.exception(
+                    "media_crawler failed; fallback to mock_llm crawl_job_id=%s",
+                    int(crawl_job_id),
+                )
+                # Hard fallback: keep refresh stable if external crawler is misconfigured.
+                candidates.extend(
+                    _build_post_candidates_realistic(
+                        con, project_id, crawl_job_id, xhs_targets, stat_date, posts_per_target
+                    )
+                )
+
+        if other_targets:
+            candidates.extend(
+                _build_post_candidates_realistic(
+                    con, project_id, crawl_job_id, other_targets, stat_date, posts_per_target
+                )
+            )
+        return candidates
+
+    # Default: mock LLM generation (deterministic seeds -> batch LLM generation).
     # NOTE: this intentionally does NOT generate fixed `posts_per_target` per crawl_job_target.
     return _build_post_candidates_realistic(con, project_id, crawl_job_id, targets, stat_date, posts_per_target)
 
@@ -977,6 +1052,109 @@ def _build_post_candidates_realistic(
     return candidates
 
 
+def _build_post_candidates_media_crawler(
+    con: sqlite3.Connection,
+    project_id: int,
+    crawl_job_id: int,
+    targets: list[CrawlTarget],
+    stat_date: str,
+    posts_per_target: int,
+) -> list[PostCandidate]:
+    """
+    Real crawl mode (external MediaCrawler integration), first version:
+    - Only Xiaohongshu (XHS) search results
+    - Crawl by each target's keyword (conservative fallback if keyword is empty/"__all__")
+    - Best-effort per-target error isolation (do not fail the whole refresh)
+    """
+    import logging
+    import os
+
+    from backend.services.external_crawlers.media_crawler_adapter import MediaCrawlerAdapter
+    from backend.services.external_crawlers.media_crawler_mapper import map_xhs_item_to_post_candidate
+
+    log = logging.getLogger("prodwatch.pipeline")
+
+    if not targets:
+        return []
+
+    brand_rows = con.execute("SELECT id, name FROM brand;").fetchall()
+    brand_map = {int(r["id"]): str(r["name"] or "").strip() for r in brand_rows}
+
+    cookies = os.environ.get("PRODWATCH_XHS_COOKIES")
+    adapter = MediaCrawlerAdapter()
+    crawled_at = now_ts()
+
+    candidates: list[PostCandidate] = []
+    errors: list[str] = []
+    for t in targets:
+        try:
+            mark_crawl_job_target_status(con, int(t.id), "running")
+        except Exception:
+            pass
+
+        kw = str(t.keyword or "").strip()
+        if kw == "" or kw == "__all__":
+            # Conservative strategy: avoid broad crawling; use brand name as keyword if available.
+            kw = brand_map.get(int(t.brand_id), "")
+
+        if kw == "":
+            try:
+                mark_crawl_job_target_status(con, int(t.id), "success")
+            except Exception:
+                pass
+            continue
+
+        try:
+            items = adapter.fetch_xhs_posts(keyword=str(kw), limit=int(posts_per_target), cookies=cookies)
+            for it in items or []:
+                if not isinstance(it, dict):
+                    continue
+                raw_json = it.get("raw_json") if isinstance(it.get("raw_json"), str) else None
+                candidates.append(
+                    map_xhs_item_to_post_candidate(
+                        it,
+                        project_id=int(project_id),
+                        crawl_job_id=int(crawl_job_id),
+                        platform_id=int(t.platform_id),
+                        brand_id=int(t.brand_id),
+                        crawled_at=str(crawled_at),
+                        created_at=str(crawled_at),
+                        raw_payload_json=raw_json,
+                    )
+                )
+            try:
+                mark_crawl_job_target_status(con, int(t.id), "success")
+            except Exception:
+                pass
+        except Exception as e:
+            # Best-effort: keep the overall refresh stable.
+            errors.append(f"{type(e).__name__}: {e}")
+            log.warning(
+                "media_crawler target failed crawl_job_id=%s target_id=%s platform_id=%s brand_id=%s keyword=%s err=%s",
+                int(crawl_job_id),
+                int(t.id),
+                int(t.platform_id),
+                int(t.brand_id),
+                str(kw),
+                str(e),
+            )
+            try:
+                mark_crawl_job_target_status(con, int(t.id), "failed")
+            except Exception:
+                pass
+            continue
+
+    # If media_crawler was requested but produced nothing due to errors, let caller decide fallback policy.
+    if not candidates and errors:
+        raise RuntimeError(
+            "media_crawler produced 0 candidates due to errors. "
+            "Check PRODWATCH_XHS_COOKIES / MediaCrawler deps. "
+            f"First_error={errors[0]}"
+        )
+
+    return candidates
+
+
 def _merge_raw_payload_text(raw_payload: Any, extra: dict[str, Any]) -> str:
     base: dict[str, Any] = {}
     try:
@@ -988,346 +1166,6 @@ def _merge_raw_payload_text(raw_payload: Any, extra: dict[str, Any]) -> str:
         base = {"raw": str(raw_payload or "")}
     base.update(extra or {})
     return json.dumps(base, ensure_ascii=False, default=str)
-
-
-def _date_ordinal_utc(stat_date: str) -> int:
-    try:
-        d = datetime.strptime(str(stat_date), "%Y-%m-%d")
-    except Exception:
-        d = datetime.utcnow()
-    return int(d.toordinal())
-
-
-def _platform_base_weight(platform_code: str) -> float:
-    c = str(platform_code or "").strip().lower()
-    if c == "weibo":
-        return 1.00
-    if c == "zhihu":
-        return 0.70
-    if c == "douyin":
-        return 0.55
-    return 0.60
-
-
-def _platform_trend_multiplier(*, platform_id: int, stat_ordinal: int) -> float:
-    phase = (stat_ordinal + int(platform_id) * 3) % 7
-    return 1.0 + 0.10 * math.sin(2 * math.pi * (phase / 7.0))
-
-
-def _alloc_int_counts(total: int, items: list[tuple[Any, float]]) -> dict[Any, int]:
-    total_n = max(0, int(total))
-    if total_n <= 0 or not items:
-        return {k: 0 for k, _ in items}
-    weights = [max(0.0, float(w)) for _, w in items]
-    s = sum(weights)
-    if s <= 0:
-        base = total_n // len(items)
-        rem = total_n - base * len(items)
-        out: dict[Any, int] = {}
-        for idx, (k, _) in enumerate(items):
-            out[k] = base + (1 if idx < rem else 0)
-        return out
-    raw = [(k, total_n * (w / s)) for (k, _), w in zip(items, weights)]
-    floors = [(k, int(math.floor(v))) for k, v in raw]
-    used = sum(v for _, v in floors)
-    rem = total_n - used
-    remainders = sorted(
-        [(k, (v - math.floor(v))) for k, v in raw],
-        key=lambda kv: (kv[1], str(kv[0])),
-        reverse=True,
-    )
-    out = {k: v for k, v in floors}
-    for i in range(max(0, rem)):
-        k = remainders[i % len(remainders)][0]
-        out[k] = int(out.get(k, 0)) + 1
-    return out
-
-
-def _zipf_weights(n: int, alpha: float) -> list[float]:
-    m = max(0, int(n))
-    if m <= 0:
-        return []
-    a = max(0.1, float(alpha))
-    return [1.0 / ((i + 1) ** a) for i in range(m)]
-
-# 主题池设计：根据项目的产品类别
-# 设计不同的行业、使用场景、功能和噪声话题池
-# 作为生成内容的参考和提示。
-def _topic_pools(product_category: str) -> dict[str, list[str]]:
-    cat = str(product_category or "").strip()
-    industry = ["价格/性价比", "体验吐槽", "新品发布", "参数对比", "售后与质保", "做工与品控", "系统更新", "联名/营销"]
-    scenario = ["通勤日常", "游戏/性能", "拍照/视频", "旅行记录", "办公学习", "夜景/室内", "续航焦虑", "发热/降频"]
-    features = ["续航", "发热", "卡顿", "屏幕", "音质", "相机", "信号", "充电", "价格", "售后"]
-    if any(x in cat for x in ["手机", "数码", "电子", "智能"]):
-        scenario = scenario + ["换机建议", "安卓/iOS对比"]
-        features = features + ["系统流畅度", "影像算法", "重量手感"]
-    if any(x in cat for x in ["相机", "摄影", "镜头"]):
-        scenario = scenario + ["人像肤色", "对焦追焦", "后期调色"]
-        features = features + ["对焦", "防抖", "画质", "镜头群"]
-    noise = ["外卖/餐饮", "房租/通勤", "明星八卦", "旅游攻略", "穿搭护肤", "股票基金"]
-    return {"industry": industry, "scenario": scenario, "features": features, "noise": noise}
-
-
-def _build_distribution_plan(
-    *,
-    project_id: int,
-    crawl_job_id: int,
-    stat_date: str,
-    posts_per_target: int,
-    product_category: str,
-    our_brand_id: Optional[int],
-    targets: list[CrawlTarget],
-    platform_map: dict[int, tuple[str, str]],
-) -> dict[str, Any]:
-    """
-    Deterministic, non-uniform distribution plan.
-
-    Keywords do NOT linearly scale volume: they only become hints for seeds/content.
-    """
-    stat_ordinal = _date_ordinal_utc(stat_date)
-    platform_ids = sorted({int(t.platform_id) for t in (targets or [])})
-    brand_ids = sorted({int(t.brand_id) for t in (targets or [])})
-    keywords = sorted({str(t.keyword) for t in (targets or []) if str(t.keyword or "").strip() not in {"", "__all__"}})
-
-    base = max(1, int(posts_per_target)) * max(1, len(platform_ids)) * max(1, len(brand_ids))
-    day_factor = 0.90 + 0.20 * ((stat_ordinal % 7) / 6.0)
-    total_posts = int(round(base * 3.0 * day_factor))
-    total_posts = max(12, min(800, total_posts))
-
-    platform_items: list[tuple[int, float]] = []
-    for pid in platform_ids:
-        code, _ = platform_map.get(int(pid), (f"p{pid}", ""))
-        w = _platform_base_weight(code) * _platform_trend_multiplier(platform_id=int(pid), stat_ordinal=stat_ordinal)
-        platform_items.append((int(pid), float(w)))
-    platform_totals = _alloc_int_counts(total_posts, platform_items)
-
-    pools = _topic_pools(product_category)
-
-    def relevance_mix(platform_code: str) -> dict[str, float]:
-        c = str(platform_code or "").strip().lower()
-        if c == "zhihu":
-            return {"strong": 0.35, "weak": 0.30, "general": 0.25, "noise": 0.10}
-        if c == "douyin":
-            return {"strong": 0.25, "weak": 0.25, "general": 0.40, "noise": 0.10}
-        return {"strong": 0.45, "weak": 0.25, "general": 0.20, "noise": 0.10}
-
-    platform_plans: list[dict[str, Any]] = []
-    for pid in platform_ids:
-        platform_code, platform_name = platform_map.get(int(pid), (f"p{pid}", ""))
-        p_total = int(platform_totals.get(int(pid), 0))
-        mix = relevance_mix(platform_code)
-
-        # brand heat: deterministic head-tail with daily rotation; bias our brand to be more visible.
-        alpha = 1.10 if str(platform_code).lower() == "weibo" else (1.00 if str(platform_code).lower() == "zhihu" else 1.20)
-        brand_scores: list[tuple[int, int]] = []
-        for bid in brand_ids:
-            score = ((int(bid) * 97) + (stat_ordinal * 13) + (int(pid) * 31)) % 1000
-            if our_brand_id is not None and int(bid) == int(our_brand_id):
-                score += 2000
-            brand_scores.append((int(bid), int(score)))
-        brand_scores.sort(key=lambda x: (-x[1], x[0]))
-        ranked_brands = [b for b, _ in brand_scores]
-        brand_weights = _zipf_weights(len(ranked_brands), alpha=alpha)
-        brand_mention_total = int(round(p_total * (mix["strong"] + 0.60 * mix["weak"])))
-        brand_mentions = _alloc_int_counts(brand_mention_total, [(bid, w) for bid, w in zip(ranked_brands, brand_weights)])
-
-        topic_pool = pools["industry"] + pools["scenario"] + pools["features"]
-        topic_weights = _zipf_weights(len(topic_pool), alpha=1.05 if str(platform_code).lower() == "weibo" else 1.00)
-        topic_counts = _alloc_int_counts(p_total, [(t, w) for t, w in zip(topic_pool, topic_weights)])
-
-        platform_plans.append(
-            {
-                "platform_id": int(pid),
-                "platform_code": str(platform_code),
-                "platform_name": str(platform_name),
-                "total_posts": int(p_total),
-                "relevance_mix": mix,
-                "brand_mentions": {str(bid): int(cnt) for bid, cnt in brand_mentions.items() if int(cnt) > 0},
-                "topics": [{"topic": str(t), "count": int(c)} for t, c in topic_counts.items() if int(c) > 0],
-            }
-        )
-
-    plan_id = sha1_hex(f"{project_id}|{crawl_job_id}|{stat_date}|{posts_per_target}|{total_posts}")[:12]
-    return {
-        "plan_id": plan_id,
-        "project_id": int(project_id),
-        "crawl_job_id": int(crawl_job_id),
-        "stat_date": str(stat_date),
-        "product_category": str(product_category or ""),
-        "total_posts": int(total_posts),
-        "keywords_as_hints": True,
-        "keywords": keywords,
-        "platform_plans": platform_plans,
-        "generated_at": now_ts(),
-    }
-
-
-def _relevance_for_index(*, platform_code: str, idx: int, total: int) -> str:
-    c = str(platform_code or "").strip().lower()
-    mix = {"strong": 45, "weak": 25, "general": 20, "noise": 10}
-    if c == "zhihu":
-        mix = {"strong": 35, "weak": 30, "general": 25, "noise": 10}
-    if c == "douyin":
-        mix = {"strong": 25, "weak": 25, "general": 40, "noise": 10}
-    x = (idx * 37 + len(c) * 11 + max(1, int(total)) * 3) % 100
-    if x < mix["strong"]:
-        return "strong"
-    if x < mix["strong"] + mix["weak"]:
-        return "weak"
-    if x < mix["strong"] + mix["weak"] + mix["general"]:
-        return "general"
-    return "noise"
-
-
-def _publish_time_for_seed(*, stat_date: str, platform_code: str, idx: int, total: int, platform_id: int) -> str:
-    try:
-        base = datetime.strptime(str(stat_date), "%Y-%m-%d")
-    except Exception:
-        base = datetime.utcnow()
-    n = max(1, int(total))
-    t = idx / max(1, (n - 1))
-    c = str(platform_code or "").strip().lower()
-    if c == "zhihu":
-        shaped = t**0.85
-    elif c == "douyin":
-        shaped = t**0.70
-    else:
-        shaped = t**0.60
-    minute_of_day = int(round(shaped * 1439))
-    minute_of_day = (minute_of_day + (int(platform_id) % 11)) % 1440
-    dt = base + timedelta(minutes=int(minute_of_day))
-    dt = dt + timedelta(seconds=int((idx * 17 + platform_id * 13) % 50))
-    return dt.strftime("%Y-%m-%d %H:%M:%S")
-
-
-def _sample_keyword_hints(keywords: list[str], *, seed_key: str) -> list[str]:
-    ks = [str(k) for k in (keywords or []) if str(k or "").strip() not in {"", "__all__"}]
-    if not ks:
-        return []
-    h = sha1_hex(seed_key)
-    a = int(h[:4], 16) % 100
-    b = int(h[4:8], 16) % len(ks)
-    c = int(h[8:12], 16) % len(ks)
-    if a < 30:
-        return []
-    if a < 75:
-        return [ks[b]]
-    if b == c:
-        c = (c + 1) % len(ks)
-    return [ks[b], ks[c]]
-
-
-def _interaction_counts(*, seed_key: str, relevance: str, platform_code: str) -> dict[str, int]:
-    h = sha1_hex(seed_key)
-    x = int(h[:8], 16)
-    c = str(platform_code or "").strip().lower()
-    base_view = 200 if c == "weibo" else (140 if c == "zhihu" else 260)
-    rel_mul = 1.8 if relevance == "strong" else (1.2 if relevance == "weak" else (0.9 if relevance == "general" else 0.4))
-    view = int(base_view * rel_mul + (x % 700))
-    like = int(max(0, (view * (0.02 + (x % 13) / 1000.0))))
-    comment = int(max(0, like * (0.15 + (x % 7) / 50.0)))
-    share = int(max(0, like * (0.05 + (x % 5) / 80.0)))
-    view = max(0, min(5000, view))
-    like = max(0, min(2000, like))
-    comment = max(0, min(800, comment))
-    share = max(0, min(500, share))
-    return {"view_count": view, "like_count": like, "comment_count": comment, "share_count": share}
-
-
-def _build_generation_seeds(plan: dict[str, Any], *, brand_map: dict[int, str], crawled_at: str) -> list[dict[str, Any]]:
-    seeds: list[dict[str, Any]] = []
-    plan_id = str(plan.get("plan_id") or "")
-    project_id = int(plan.get("project_id") or 0)
-    crawl_job_id = int(plan.get("crawl_job_id") or 0)
-    stat_date = str(plan.get("stat_date") or "")
-    keywords = [str(k) for k in (plan.get("keywords") or [])]
-
-    pools = _topic_pools(str(plan.get("product_category") or ""))
-    noise_topics = pools.get("noise") or []
-
-    for pp in (plan.get("platform_plans") or []):
-        if not isinstance(pp, dict):
-            continue
-        platform_id = int(pp.get("platform_id") or 0)
-        platform_code = str(pp.get("platform_code") or f"p{platform_id}")
-        total = int(pp.get("total_posts") or 0)
-        topics = [t for t in (pp.get("topics") or []) if isinstance(t, dict) and (t.get("topic") or "").strip() != ""]
-        topic_seq: list[str] = []
-        for t in topics:
-            topic_seq.extend([str(t["topic"])] * max(0, int(t.get("count") or 0)))
-        if not topic_seq:
-            topic_seq = ["体验吐槽"] * max(1, total)
-
-        bm = pp.get("brand_mentions") or {}
-        brand_ids = [int(k) for k in bm.keys() if str(k).isdigit()] if isinstance(bm, dict) else []
-        brand_ids.sort()
-
-        for i in range(max(0, total)):
-            seed_id = sha1_hex(f"{project_id}|{crawl_job_id}|{plan_id}|{platform_id}|{i}")[:18]
-            relevance = _relevance_for_index(platform_code=platform_code, idx=i, total=total)
-            topic = topic_seq[i % len(topic_seq)]
-            if relevance == "noise" and noise_topics:
-                topic = noise_topics[int(sha1_hex(seed_id)[:4], 16) % len(noise_topics)]
-
-            brand_id: Optional[int] = None
-            brand_name: Optional[str] = None
-            if relevance in {"strong", "weak"} and brand_ids:
-                wants_brand = True if relevance == "strong" else (int(sha1_hex(seed_id)[-2:], 16) % 100 < 60)
-                if wants_brand:
-                    pick = int(sha1_hex(seed_id)[:4], 16) % len(brand_ids)
-                    brand_id = int(brand_ids[pick])
-                    brand_name = str(brand_map.get(int(brand_id), f"b{brand_id}"))
-
-            publish_time = _publish_time_for_seed(
-                stat_date=stat_date,
-                platform_code=platform_code,
-                idx=i,
-                total=total,
-                platform_id=platform_id,
-            )
-            external_post_id = seed_id
-            post_url = f"https://example.local/{platform_code}/post/{external_post_id}"
-            author_name = f"user_{sha1_hex(f'{platform_code}|{external_post_id}')[:6]}"
-
-            counts = _interaction_counts(seed_key=seed_id, relevance=relevance, platform_code=platform_code)
-            keyword_hints = _sample_keyword_hints(keywords, seed_key=seed_id)
-
-            seeds.append(
-                {
-                    "seed_id": seed_id,
-                    "project_id": project_id,
-                    "crawl_job_id": crawl_job_id,
-                    "platform_id": platform_id,
-                    "platform_code": platform_code,
-                    "brand_id": brand_id,
-                    "brand_name": brand_name,
-                    "topic": topic,
-                    "relevance": relevance,
-                    "keyword_hints": keyword_hints,
-                    "external_post_id": external_post_id,
-                    "post_url": post_url,
-                    "publish_time": publish_time,
-                    "author_name": author_name,
-                    "like_count": counts["like_count"],
-                    "comment_count": counts["comment_count"],
-                    "share_count": counts["share_count"],
-                    "view_count": counts["view_count"],
-                    "raw_payload": json.dumps(
-                        {
-                            "platform": platform_code,
-                            "generated": True,
-                            "distribution_plan_id": plan_id,
-                            "seed_id": seed_id,
-                            "topic": topic,
-                            "relevance": relevance,
-                            "keyword_hints": keyword_hints,
-                            "crawled_at": crawled_at,
-                        },
-                        ensure_ascii=False,
-                    ),
-                }
-            )
-    return seeds
 
 
 def _fallback_title(seed: dict[str, Any]) -> str:
@@ -2363,10 +2201,23 @@ def aggregate_daily_metrics(con: sqlite3.Connection, project_id: int, stat_date:
 
 def finalize_job_success(con: sqlite3.Connection, crawl_job_id: int, project_id: int) -> None:
     ts = now_ts()
+    finalize_job_success_basic(con, int(crawl_job_id), ended_at=ts)
+    con.execute("UPDATE project SET last_refresh_at=?, updated_at=? WHERE id=?;", (ts, ts, int(project_id)))
+
+
+def finalize_job_success_basic(con: sqlite3.Connection, crawl_job_id: int, *, ended_at: Optional[str] = None) -> None:
+    """
+    Mark a crawl_job as success without touching the project row.
+
+    Why:
+    - We split the pipeline into independent chains (simulate vs analyze).
+    - Only "analyze/aggregate" should update project.last_refresh_at; "simulate-only" should not.
+    """
+    ts = str(ended_at or now_ts())
     try:
         con.execute(
             "UPDATE crawl_job SET status=?, ended_at=?, finished_at=?, error_message=? WHERE id=?;",
-            ("success", ts, ts, None, crawl_job_id),
+            ("success", ts, ts, None, int(crawl_job_id)),
         )
     except sqlite3.OperationalError as e:
         msg = str(e).lower()
@@ -2374,9 +2225,8 @@ def finalize_job_success(con: sqlite3.Connection, crawl_job_id: int, project_id:
             raise
         con.execute(
             "UPDATE crawl_job SET status=?, ended_at=?, error_message=? WHERE id=?;",
-            ("success", ts, None, crawl_job_id),
+            ("success", ts, None, int(crawl_job_id)),
         )
-    con.execute("UPDATE project SET last_refresh_at=?, updated_at=? WHERE id=?;", (ts, ts, project_id))
 
 
 def finalize_job_failed(con: sqlite3.Connection, crawl_job_id: int, error_message: str) -> None:
@@ -2435,6 +2285,7 @@ def run_pipeline_with_trigger(
     schedule_type: str,
     schedule_expr: Optional[str],
     created_by: str,
+    crawl_source: Optional[str] = None,
 ) -> int:
     ensure_project_exists(con, project_id)
     platform_ids, brand_ids, keywords = load_project_scope(con, project_id)
@@ -2466,6 +2317,7 @@ def run_pipeline_with_trigger(
             project_id=int(project_id),
             stat_date=str(stat_date),
             posts_per_target=int(posts_per_target),
+            crawl_source=crawl_source,
         )
         return int(crawl_job_id)
     except Exception as e:
@@ -2480,14 +2332,8 @@ def run_pipeline_existing_job(
     project_id: int,
     stat_date: str,
     posts_per_target: int,
+    crawl_source: Optional[str] = None,
 ) -> None:
-    """
-    Run the full pipeline for an already-created crawl_job_id.
-
-    Notes:
-    - This method owns finalize_job_success/failed.
-    - It is used by the async refresh worker to guarantee a crawl_job exists even on early failures.
-    """
     ensure_project_exists(con, int(project_id))
     platform_ids, brand_ids, keywords = load_project_scope(con, int(project_id))
     if not platform_ids:
@@ -2497,26 +2343,56 @@ def run_pipeline_existing_job(
     if not keywords:
         keywords = ["__all__"]
 
+    crawl_source_norm = normalize_crawl_source(crawl_source) if crawl_source else default_crawl_source()
+
     try:
         import logging
         import time
 
         log = logging.getLogger("prodwatch.pipeline")
         pipeline_t0 = time.perf_counter()
+
+        def _progress(stage: str, message: str, meta: Optional[dict[str, Any]] = None) -> None:
+            """
+            Best-effort single-row progress upsert for frontend polling.
+            """
+            try:
+                upsert_crawl_job_progress(
+                    con,
+                    crawl_job_id=int(crawl_job_id),
+                    stage=str(stage),
+                    message=str(message),
+                    meta=meta,
+                )
+                con.commit()
+            except Exception:
+                pass
+
         log.info(
-            "pipeline start crawl_job_id=%s project_id=%s stat_date=%s posts_per_target=%s",
+            "pipeline start crawl_job_id=%s project_id=%s stat_date=%s posts_per_target=%s crawl_source=%s",
             int(crawl_job_id),
             int(project_id),
             str(stat_date),
             int(posts_per_target),
+            str(crawl_source_norm),
         )
 
-        # Mark running (idempotent enough for our demo DB).
+        # 进程启动时就写入一次进度，确保UI能看到"simulate"阶段的日志和状态。
+        _progress(
+            "simulate",
+            "simulate started",
+            {
+                "project_id": int(project_id),
+                "stat_date": str(stat_date),
+                "posts_per_target": int(posts_per_target),
+                "crawl_source": str(crawl_source_norm),
+            },
+        )
+
         stage = "mark_job_running"
         st0 = time.perf_counter()
         log.info("pipeline stage_start crawl_job_id=%s stage=%s", int(crawl_job_id), stage)
         mark_job_running(con, int(crawl_job_id))
-        # Commit early so the UI can observe "running" while long LLM calls execute.
         try:
             con.commit()
         except Exception:
@@ -2531,7 +2407,9 @@ def run_pipeline_existing_job(
         stage = "generate_crawl_job_targets"
         st0 = time.perf_counter()
         log.info("pipeline stage_start crawl_job_id=%s stage=%s", int(crawl_job_id), stage)
+        _progress("simulate", f"{stage} started", {"stage": str(stage)})
         targets = generate_crawl_job_targets(con, int(crawl_job_id), platform_ids, brand_ids, keywords)
+        _progress("simulate", f"{stage} done", {"stage": str(stage), "target_count": int(len(targets or []))})
         log.info(
             "pipeline stage_done crawl_job_id=%s stage=%s dt_s=%.3f target_count=%s",
             int(crawl_job_id),
@@ -2543,6 +2421,7 @@ def run_pipeline_existing_job(
         stage = "build_post_candidates"
         st0 = time.perf_counter()
         log.info("pipeline stage_start crawl_job_id=%s stage=%s", int(crawl_job_id), stage)
+        _progress("simulate", f"{stage} started", {"stage": str(stage), "crawl_source": str(crawl_source_norm)})
         candidates = build_post_candidates(
             con,
             int(project_id),
@@ -2550,7 +2429,9 @@ def run_pipeline_existing_job(
             targets,
             str(stat_date),
             int(posts_per_target),
+            crawl_source=str(crawl_source_norm),
         )
+        _progress("simulate", f"{stage} done", {"stage": str(stage), "candidate_count": int(len(candidates or []))})
         log.info(
             "pipeline stage_done crawl_job_id=%s stage=%s dt_s=%.3f candidate_count=%s",
             int(crawl_job_id),
@@ -2562,7 +2443,9 @@ def run_pipeline_existing_job(
         stage = "deduplicate_candidates"
         st0 = time.perf_counter()
         log.info("pipeline stage_start crawl_job_id=%s stage=%s", int(crawl_job_id), stage)
+        _progress("simulate", f"{stage} started", {"stage": str(stage), "candidate_count": int(len(candidates or []))})
         candidates = deduplicate_candidates(candidates)
+        _progress("simulate", f"{stage} done", {"stage": str(stage), "candidate_count": int(len(candidates or []))})
         log.info(
             "pipeline stage_done crawl_job_id=%s stage=%s dt_s=%.3f candidate_count=%s",
             int(crawl_job_id),
@@ -2574,8 +2457,9 @@ def run_pipeline_existing_job(
         stage = "insert_posts"
         st0 = time.perf_counter()
         log.info("pipeline stage_start crawl_job_id=%s stage=%s", int(crawl_job_id), stage)
+        _progress("simulate", f"{stage} started", {"stage": str(stage), "candidate_count": int(len(candidates or []))})
         insert_posts(con, candidates)
-        # Best-effort: post_raw count for this job (helps spot "insert did nothing" quickly).
+        # 写入进度供前端log
         post_raw_cnt = None
         try:
             row = con.execute("SELECT count(1) c FROM post_raw WHERE crawl_job_id=?;", (int(crawl_job_id),)).fetchone()
@@ -2591,17 +2475,39 @@ def run_pipeline_existing_job(
             len(candidates or []),
             post_raw_cnt,
         )
+        _progress(
+            "simulate",
+            f"{stage} done",
+            {
+                "stage": str(stage),
+                "inserted_candidate_count": int(len(candidates or [])),
+                "post_raw_count": post_raw_cnt,
+            },
+        )
 
         stage = "deduplicate_posts"
         st0 = time.perf_counter()
         log.info("pipeline stage_start crawl_job_id=%s stage=%s", int(crawl_job_id), stage)
+        _progress("simulate", f"{stage} started", {"stage": str(stage)})
         canonical_post_ids = deduplicate_posts(con, int(crawl_job_id))
+        _progress(
+            "simulate",
+            f"{stage} done",
+            {"stage": str(stage), "canonical_post_count": int(len(canonical_post_ids or []))},
+        )
         log.info(
             "pipeline stage_done crawl_job_id=%s stage=%s dt_s=%.3f canonical_post_count=%s",
             int(crawl_job_id),
             stage,
             time.perf_counter() - st0,
             len(canonical_post_ids or []),
+        )
+
+        # simulate -> analyze. 写入进度供前端log
+        _progress(
+            "analyze",
+            "analysis started",
+            {"canonical_post_count": int(len(canonical_post_ids or [])), "crawl_source": str(crawl_source_norm)},
         )
 
         stage = "run_analysis"
@@ -2614,6 +2520,13 @@ def run_pipeline_existing_job(
             stage,
             time.perf_counter() - st0,
             len(canonical_post_ids or []),
+        )
+
+        # analyze -> aggregate.写入进度供前端log
+        _progress(
+            "aggregate",
+            "aggregate started",
+            {"canonical_post_count": int(len(canonical_post_ids or [])), "stat_date": str(stat_date)},
         )
 
         stage = "aggregate_daily_metrics"
@@ -2631,6 +2544,7 @@ def run_pipeline_existing_job(
         st0 = time.perf_counter()
         log.info("pipeline stage_start crawl_job_id=%s stage=%s", int(crawl_job_id), stage)
         finalize_job_success(con, int(crawl_job_id), int(project_id))
+        _progress("done", "done", {"stat_date": str(stat_date)})
         log.info(
             "pipeline stage_done crawl_job_id=%s stage=%s dt_s=%.3f",
             int(crawl_job_id),
@@ -2644,9 +2558,330 @@ def run_pipeline_existing_job(
             time.perf_counter() - pipeline_t0,
         )
     except Exception as e:
-        # Ensure failure status is persisted even if the caller wraps us in `with con:`.
-        # `sqlite3.Connection.__exit__` rolls back on exceptions, which would otherwise revert our
-        # crawl_job status updates and make the job look permanently "pending".
+        #确保任何异常都能被捕获并记录到crawl_job中
+        #避免出现"卡在simulate阶段但UI不显示日志"的情况。
+        try:
+            con.rollback()
+        except Exception:
+            pass
+        try:
+            mark_all_targets_failed(con, int(crawl_job_id))
+        except Exception:
+            pass
+        try:
+            upsert_crawl_job_progress(
+                con,
+                crawl_job_id=int(crawl_job_id),
+                stage="failed",
+                message=str(e),
+                meta=None,
+            )
+        except Exception:
+            pass
+        finalize_job_failed(con, int(crawl_job_id), str(e))
+        try:
+            con.commit()
+        except Exception:
+            pass
+        raise
+
+
+def run_simulate_existing_job(
+    *,
+    con: sqlite3.Connection,
+    crawl_job_id: int,
+    project_id: int,
+    stat_date: str,
+    posts_per_target: int,
+    crawl_source: Optional[str] = None,
+) -> None:
+    """
+    Simulate/generate posts only (no analysis, no aggregation).
+
+    Pipeline stages:
+    - generate_crawl_job_targets
+    - build_post_candidates
+    - deduplicate_candidates
+    - insert_posts
+    - deduplicate_posts
+    - finalize_job_success_basic
+    """
+    ensure_project_exists(con, int(project_id))
+    platform_ids, brand_ids, keywords = load_project_scope(con, int(project_id))
+    if not platform_ids:
+        raise RuntimeError("project_platform is empty for this project")
+    if not brand_ids:
+        raise RuntimeError("project_brand is empty for this project")
+    if not keywords:
+        keywords = ["__all__"]
+
+    crawl_source_norm = normalize_crawl_source(crawl_source) if crawl_source else default_crawl_source()
+
+    try:
+        import logging
+        import time
+
+        log = logging.getLogger("prodwatch.pipeline")
+        pipeline_t0 = time.perf_counter()
+        log.info(
+            "simulate start crawl_job_id=%s project_id=%s stat_date=%s posts_per_target=%s crawl_source=%s",
+            int(crawl_job_id),
+            int(project_id),
+            str(stat_date),
+            int(posts_per_target),
+            str(crawl_source_norm),
+        )
+
+        stage = "mark_job_running"
+        st0 = time.perf_counter()
+        log.info("simulate stage_start crawl_job_id=%s stage=%s", int(crawl_job_id), stage)
+        mark_job_running(con, int(crawl_job_id))
+        try:
+            con.commit()
+        except Exception:
+            pass
+        log.info(
+            "simulate stage_done crawl_job_id=%s stage=%s dt_s=%.3f",
+            int(crawl_job_id),
+            stage,
+            time.perf_counter() - st0,
+        )
+
+        stage = "generate_crawl_job_targets"
+        st0 = time.perf_counter()
+        log.info("simulate stage_start crawl_job_id=%s stage=%s", int(crawl_job_id), stage)
+        targets = generate_crawl_job_targets(con, int(crawl_job_id), platform_ids, brand_ids, keywords)
+        log.info(
+            "simulate stage_done crawl_job_id=%s stage=%s dt_s=%.3f target_count=%s",
+            int(crawl_job_id),
+            stage,
+            time.perf_counter() - st0,
+            len(targets or []),
+        )
+
+        stage = "build_post_candidates"
+        st0 = time.perf_counter()
+        log.info("simulate stage_start crawl_job_id=%s stage=%s", int(crawl_job_id), stage)
+        candidates = build_post_candidates(
+            con,
+            int(project_id),
+            int(crawl_job_id),
+            targets,
+            str(stat_date),
+            int(posts_per_target),
+            crawl_source=str(crawl_source_norm),
+        )
+        log.info(
+            "simulate stage_done crawl_job_id=%s stage=%s dt_s=%.3f candidate_count=%s",
+            int(crawl_job_id),
+            stage,
+            time.perf_counter() - st0,
+            len(candidates or []),
+        )
+
+        stage = "deduplicate_candidates"
+        st0 = time.perf_counter()
+        log.info("simulate stage_start crawl_job_id=%s stage=%s", int(crawl_job_id), stage)
+        candidates = deduplicate_candidates(candidates)
+        log.info(
+            "simulate stage_done crawl_job_id=%s stage=%s dt_s=%.3f candidate_count=%s",
+            int(crawl_job_id),
+            stage,
+            time.perf_counter() - st0,
+            len(candidates or []),
+        )
+
+        stage = "insert_posts"
+        st0 = time.perf_counter()
+        log.info("simulate stage_start crawl_job_id=%s stage=%s", int(crawl_job_id), stage)
+        insert_posts(con, candidates)
+        post_raw_cnt = None
+        try:
+            row = con.execute("SELECT count(1) c FROM post_raw WHERE crawl_job_id=?;", (int(crawl_job_id),)).fetchone()
+            if row is not None:
+                post_raw_cnt = int(row["c"])
+        except Exception:
+            post_raw_cnt = None
+        log.info(
+            "simulate stage_done crawl_job_id=%s stage=%s dt_s=%.3f inserted_candidate_count=%s post_raw_count=%s",
+            int(crawl_job_id),
+            stage,
+            time.perf_counter() - st0,
+            len(candidates or []),
+            post_raw_cnt,
+        )
+
+        stage = "deduplicate_posts"
+        st0 = time.perf_counter()
+        log.info("simulate stage_start crawl_job_id=%s stage=%s", int(crawl_job_id), stage)
+        canonical_post_ids = deduplicate_posts(con, int(crawl_job_id))
+        log.info(
+            "simulate stage_done crawl_job_id=%s stage=%s dt_s=%.3f canonical_post_count=%s",
+            int(crawl_job_id),
+            stage,
+            time.perf_counter() - st0,
+            len(canonical_post_ids or []),
+        )
+
+        stage = "finalize_job_success"
+        st0 = time.perf_counter()
+        log.info("simulate stage_start crawl_job_id=%s stage=%s", int(crawl_job_id), stage)
+        finalize_job_success_basic(con, int(crawl_job_id))
+        log.info(
+            "simulate stage_done crawl_job_id=%s stage=%s dt_s=%.3f",
+            int(crawl_job_id),
+            stage,
+            time.perf_counter() - st0,
+        )
+
+        log.info(
+            "simulate done crawl_job_id=%s total_dt_s=%.3f",
+            int(crawl_job_id),
+            time.perf_counter() - pipeline_t0,
+        )
+    except Exception as e:
+        try:
+            con.rollback()
+        except Exception:
+            pass
+        try:
+            mark_all_targets_failed(con, int(crawl_job_id))
+        except Exception:
+            pass
+        finalize_job_failed(con, int(crawl_job_id), str(e))
+        try:
+            con.commit()
+        except Exception:
+            pass
+        raise
+
+
+def run_analyze_existing_job(
+    *,
+    con: sqlite3.Connection,
+    crawl_job_id: int,
+    project_id: int,
+    source_crawl_job_id: int,
+) -> None:
+    """
+    Analyze an existing batch of posts (identified by source crawl_job_id) and aggregate metrics.
+
+    Pipeline stages:
+    - resolve post ids by source_crawl_job_id
+    - run_analysis
+    - aggregate_daily_metrics (for all dates present in the source batch)
+    - finalize_job_success
+    """
+    ensure_project_exists(con, int(project_id))
+
+    try:
+        import logging
+        import time
+
+        log = logging.getLogger("prodwatch.pipeline")
+        pipeline_t0 = time.perf_counter()
+        log.info(
+            "analyze start crawl_job_id=%s project_id=%s source_crawl_job_id=%s",
+            int(crawl_job_id),
+            int(project_id),
+            int(source_crawl_job_id),
+        )
+
+        stage = "mark_job_running"
+        st0 = time.perf_counter()
+        log.info("analyze stage_start crawl_job_id=%s stage=%s", int(crawl_job_id), stage)
+        mark_job_running(con, int(crawl_job_id))
+        try:
+            con.commit()
+        except Exception:
+            pass
+        log.info(
+            "analyze stage_done crawl_job_id=%s stage=%s dt_s=%.3f",
+            int(crawl_job_id),
+            stage,
+            time.perf_counter() - st0,
+        )
+
+        stage = "resolve_posts"
+        st0 = time.perf_counter()
+        log.info("analyze stage_start crawl_job_id=%s stage=%s", int(crawl_job_id), stage)
+        # Canonicalize ids within the batch (dedup_key per platform) to match the full pipeline behavior.
+        post_ids = deduplicate_posts(con, int(source_crawl_job_id))
+        # Extra guard: ensure these posts belong to this project (avoid cross-project id mixups).
+        if post_ids:
+            placeholders = ",".join(["?"] * len(post_ids))
+            row = con.execute(
+                f"SELECT COUNT(*) c FROM post_raw WHERE project_id=? AND id IN ({placeholders});",
+                tuple([int(project_id)] + [int(x) for x in post_ids]),
+            ).fetchone()
+            cnt = int(row["c"] or 0) if row is not None else 0
+            if cnt != len(post_ids):
+                raise RuntimeError("source_crawl_job_id contains posts outside this project")
+        if not post_ids:
+            raise RuntimeError("no posts found for source_crawl_job_id")
+        log.info(
+            "analyze stage_done crawl_job_id=%s stage=%s dt_s=%.3f post_count=%s",
+            int(crawl_job_id),
+            stage,
+            time.perf_counter() - st0,
+            len(post_ids or []),
+        )
+
+        stage = "run_analysis"
+        st0 = time.perf_counter()
+        log.info("analyze stage_start crawl_job_id=%s stage=%s", int(crawl_job_id), stage)
+        run_analysis(con, int(project_id), post_ids)
+        log.info(
+            "analyze stage_done crawl_job_id=%s stage=%s dt_s=%.3f post_count=%s",
+            int(crawl_job_id),
+            stage,
+            time.perf_counter() - st0,
+            len(post_ids or []),
+        )
+
+        stage = "aggregate_daily_metrics"
+        st0 = time.perf_counter()
+        log.info("analyze stage_start crawl_job_id=%s stage=%s", int(crawl_job_id), stage)
+        stat_rows = con.execute(
+            """
+            SELECT DISTINCT date(COALESCE(publish_time, crawled_at)) AS stat_date
+            FROM post_raw
+            WHERE project_id=? AND crawl_job_id=?
+            ORDER BY stat_date ASC;
+            """,
+            (int(project_id), int(source_crawl_job_id)),
+        ).fetchall()
+        stat_dates = [str(r["stat_date"]) for r in stat_rows if r is not None and r["stat_date"] is not None]
+        if not stat_dates:
+            # Fallback: keep parity with the UI expectation that metrics exist; use today.
+            stat_dates = [parse_stat_date(None)]
+        for d in stat_dates:
+            aggregate_daily_metrics(con, int(project_id), str(d))
+        log.info(
+            "analyze stage_done crawl_job_id=%s stage=%s dt_s=%.3f stat_date_count=%s",
+            int(crawl_job_id),
+            stage,
+            time.perf_counter() - st0,
+            len(stat_dates),
+        )
+
+        stage = "finalize_job_success"
+        st0 = time.perf_counter()
+        log.info("analyze stage_start crawl_job_id=%s stage=%s", int(crawl_job_id), stage)
+        finalize_job_success(con, int(crawl_job_id), int(project_id))
+        log.info(
+            "analyze stage_done crawl_job_id=%s stage=%s dt_s=%.3f",
+            int(crawl_job_id),
+            stage,
+            time.perf_counter() - st0,
+        )
+
+        log.info(
+            "analyze done crawl_job_id=%s total_dt_s=%.3f",
+            int(crawl_job_id),
+            time.perf_counter() - pipeline_t0,
+        )
+    except Exception as e:
         try:
             con.rollback()
         except Exception:

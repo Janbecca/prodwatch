@@ -26,6 +26,59 @@ class ManualRefreshPayload(BaseModel):
     )
     posts_per_target: int = Field(default=3, ge=1, le=50)
     created_by: str = Field(default="user")
+    crawl_source: Optional[str] = Field(default=None, description="mock_llm|media_crawler (default: mock_llm)")
+
+
+class SimulatePayload(BaseModel):
+    stat_date: Optional[str] = Field(default=None, description="YYYY-MM-DD (default: today UTC)")
+    posts_per_target: int = Field(default=3, ge=1, le=50)
+    created_by: str = Field(default="user")
+    crawl_source: Optional[str] = Field(default=None, description="mock_llm|media_crawler (default: mock_llm)")
+
+
+class AnalyzePayload(BaseModel):
+    source_crawl_job_id: Optional[int] = Field(default=None, ge=1, description="Analyze posts from this crawl_job_id")
+    created_by: str = Field(default="user")
+
+
+def _post_generation_plan_best_effort() -> dict[str, Any]:
+    """
+    Best-effort plan snapshot for the frontend logger.
+
+    Keeps the response schema stable even if LLM config is missing or invalid.
+    """
+    post_generation_plan: dict[str, Any] | None = None
+    try:
+        cfg = get_llm_config_store().get("crawler_generation", con=None)
+        prompt_version = get_prompt_store().get("crawler_generation").version
+        provider = str(getattr(cfg, "provider", "") or "").strip().lower() or "deepseek"
+        if get_provider_factory().get(provider) is None:
+            provider = (get_provider_factory().list_provider_names() or ["deepseek"])[0]
+        model = str(getattr(cfg, "model", "") or "").strip()
+        post_generation_plan = {
+            "generated_by": "llm",
+            "provider": provider,
+            "model": model,
+            "prompt_version": str(prompt_version or "").strip(),
+        }
+    except Exception:
+        post_generation_plan = {"generated_by": "llm", "provider": "unknown", "model": "", "prompt_version": ""}
+    return post_generation_plan
+
+
+def _resolve_latest_post_batch_job_id(db: sqlite3.Connection, project_id: int) -> Optional[int]:
+    row = db.execute(
+        """
+        SELECT MAX(crawl_job_id) AS id
+        FROM post_raw
+        WHERE project_id=? AND crawl_job_id IS NOT NULL;
+        """,
+        (int(project_id),),
+    ).fetchone()
+    if row is None:
+        return None
+    v = row["id"]
+    return int(v) if v is not None else None
 
 
 @router.get("/{project_id}/refresh/status")
@@ -69,26 +122,7 @@ def manual_refresh_project(
     """
     svc = get_refresh_service()
 
-    # Provide a deterministic "plan" for post generation at trigger time.
-    # Avoid depending on the request DB connection here to reduce "database is locked" races
-    # with the just-started background refresh worker.
-    post_generation_plan: dict[str, Any] | None = None
-    try:
-        cfg = get_llm_config_store().get("crawler_generation", con=None)
-        prompt_version = get_prompt_store().get("crawler_generation").version
-        provider = str(getattr(cfg, "provider", "") or "").strip().lower() or "deepseek"
-        if get_provider_factory().get(provider) is None:
-            provider = (get_provider_factory().list_provider_names() or ["deepseek"])[0]
-        model = str(getattr(cfg, "model", "") or "").strip()
-        post_generation_plan = {
-            "generated_by": "llm",
-            "provider": provider,
-            "model": model,
-            "prompt_version": str(prompt_version or "").strip(),
-        }
-    except Exception:
-        # Best-effort fallback: still return a stable shape for the frontend logger.
-        post_generation_plan = {"generated_by": "llm", "provider": "unknown", "model": "", "prompt_version": ""}
+    post_generation_plan = _post_generation_plan_best_effort()
 
     try:
         db_path = resolve_db_path(DEFAULT_DB_PATH)
@@ -100,6 +134,7 @@ def manual_refresh_project(
             posts_per_target=int(payload.posts_per_target),
             trigger="manual",
             created_by=str(payload.created_by or "user"),
+            crawl_source=payload.crawl_source,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -133,4 +168,102 @@ def manual_refresh_project(
         "accepted": True,
         "running": True,
         "post_generation_plan": post_generation_plan,
+    }
+
+
+@router.post("/{project_id}/simulate", status_code=202)
+def simulate_posts(
+    project_id: int, payload: SimulatePayload, db: sqlite3.Connection = Depends(get_db)
+) -> dict[str, Any]:
+    """
+    Simulate/generate posts only (no analysis).
+    """
+    svc = get_refresh_service()
+    post_generation_plan = _post_generation_plan_best_effort()
+
+    try:
+        db_path = resolve_db_path(DEFAULT_DB_PATH)
+        r = svc.simulate_project_async(
+            db_path=str(db_path),
+            con=db,
+            project_id=int(project_id),
+            stat_date=payload.stat_date,
+            posts_per_target=int(payload.posts_per_target),
+            trigger="manual",
+            created_by=str(payload.created_by or "user"),
+            crawl_source=payload.crawl_source,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"simulate failed: {e}")
+
+    if r.skipped:
+        raise HTTPException(status_code=409, detail=f"simulate skipped: {r.reason or 'unknown'}")
+    if r.error_message:
+        raise HTTPException(status_code=500, detail=f"simulate failed: {r.error_message}")
+
+    return {
+        "project_id": int(project_id),
+        "crawl_job_id": int(r.crawl_job_id or 0),
+        "stat_date": str(r.stat_date),
+        "triggered_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        "accepted": True,
+        "running": True,
+        "job_kind": "simulate",
+        "post_generation_plan": post_generation_plan,
+    }
+
+
+@router.post("/{project_id}/analyze", status_code=202)
+def analyze_posts(
+    project_id: int, payload: AnalyzePayload, db: sqlite3.Connection = Depends(get_db)
+) -> dict[str, Any]:
+    """
+    Analyze posts from an existing simulated batch (or the latest available batch).
+    """
+    svc = get_refresh_service()
+
+    src = int(payload.source_crawl_job_id) if payload.source_crawl_job_id else None
+    if src is None:
+        src = _resolve_latest_post_batch_job_id(db, int(project_id))
+    if src is None:
+        raise HTTPException(status_code=400, detail="no post batch found to analyze")
+
+    # Ensure the source batch belongs to this project.
+    row = db.execute(
+        "SELECT 1 FROM post_raw WHERE project_id=? AND crawl_job_id=? LIMIT 1;",
+        (int(project_id), int(src)),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=400, detail="source_crawl_job_id not found for this project")
+
+    try:
+        db_path = resolve_db_path(DEFAULT_DB_PATH)
+        r = svc.analyze_project_async(
+            db_path=str(db_path),
+            con=db,
+            project_id=int(project_id),
+            source_crawl_job_id=int(src),
+            trigger="manual",
+            created_by=str(payload.created_by or "user"),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"analyze failed: {e}")
+
+    if r.skipped:
+        raise HTTPException(status_code=409, detail=f"analyze skipped: {r.reason or 'unknown'}")
+    if r.error_message:
+        raise HTTPException(status_code=500, detail=f"analyze failed: {r.error_message}")
+
+    return {
+        "project_id": int(project_id),
+        "crawl_job_id": int(r.crawl_job_id or 0),
+        "triggered_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        "accepted": True,
+        "running": True,
+        "job_kind": "analyze",
+        "source_crawl_job_id": int(src),
     }

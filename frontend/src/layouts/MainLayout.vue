@@ -103,6 +103,7 @@ watch(
   border-right: 1px solid var(--el-border-color);
   background: var(--el-bg-color);
   padding: 12px 10px;
+  overflow: auto;
 }
 .brand {
   padding: 8px 10px 12px;
@@ -130,12 +131,17 @@ watch(
 }
 .app-main {
   background: var(--el-bg-color-page);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 .refresh-banner {
   margin-bottom: 10px;
 }
 .main-content {
-  min-height: calc(100vh - 120px);
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
 }
 .spin-dot {
   width: 10px;

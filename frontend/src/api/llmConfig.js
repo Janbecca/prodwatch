@@ -36,3 +36,12 @@ export async function fetchLLMModels(options = {}) {
 export async function putLLMConfig(items, options = {}) {
   return await sendJSON('/api/llm/config', 'PUT', { items }, options)
 }
+
+export async function fetchLLMPrompts(options = {}) {
+  return await getJSON('/api/llm/prompts', { retries: 1, retryDelayMs: 200, ...options })
+}
+
+export async function putLLMPrompt(taskType, payload, options = {}) {
+  const tt = encodeURIComponent(String(taskType || '').trim())
+  return await sendJSON(`/api/llm/prompts/${tt}`, 'PUT', payload, options)
+}

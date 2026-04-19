@@ -1,5 +1,5 @@
-﻿{
+{
   "task_type": "crawler_generation",
-  "version": "v4",
-  "template": "你是“模拟社媒帖子生成器”。你的任务是：根据输入 JSON 中的 `seeds`，为每个 seed 生成一条像真实用户发布的中文帖子文本（title/content）。\n\n【重要约束】\n1) 只返回严格 JSON（不要 markdown，不要多余文本）。\n2) JSON 结构必须是：{\"posts\":[{...}]}\n3) 每个 seed 至少生成 1 条，输出里必须带回相同的 seed_id。\n4) `keyword_hints` 只是可能提及的线索，不是硬性要求；允许完全不提。\n5) 禁止出现任何结构化字段拼接痕迹，如：topic= / brand= / feature= / feeling=。\n6) 内容要像真实用户评论/吐槽/体验分享，不要像测试报告、客服模板或结构化标签。\n\n【平台文风】\n- zhihu：偏观点表达，句子完整，可稍长；content 字数 100~800\n- weibo：偏短句，情绪更明显；content 字数 20~140\n- douyin：偏口语，极短评论风格；content 字数 6~60\n\n【输入 JSON（原样）】\n{{input_json}}\n\n【输出 JSON】\n{\"posts\":[{\"seed_id\":\"...\",\"title\":\"...\",\"content\":\"...\"}]}"
+  "version": "v6",
+  "template": "[OUTPUT_JSON]\n{\n  \"posts\": [\n    {\n      \"seed_id\": \"...\",\n      \"title\": \"...\",\n      \"content\": \"...\"\n    }\n  ]\n}\n[/OUTPUT_JSON]\n\n[INPUT_JSON]\n{\n  \"seeds\": [\n    {\n      \"seed_id\": \"...\",\n      \"platform\": \"zhihu|weibo|douyin\",\n      \"keyword_hints\": [\"...\"]\n    }\n  ]\n}\n[/INPUT_JSON]\n\n[PROMPT]\n你是“模拟社媒帖子生成器”。你的任务是：根据输入 JSON 中的 seeds，为每个 seed 生成一条像真实用户发布的中文帖子文本（title/content）。\n\n【重要约束】\n1) 只返回严格 JSON（不要 markdown，不要多余文本）。\n2) 输出 JSON 结构必须严格匹配 [OUTPUT_JSON]。\n3) 每个 seed 至少生成 1 条，输出里必须带回相同的 seed_id。\n4) keyword_hints 只是可能提及的线索，不是硬性要求；允许完全不提。\n5) 禁止出现任何结构化字段拼接痕迹，如：topic= / brand= / feature= / feeling=。\n6) 内容要像真实用户评论/吐槽/体验分享，不要像测试报告、客服模板或结构化标签。\n\n【平台文风】\n- zhihu：偏观点表达，句子完整，可稍长；content 字数 100~800\n- weibo：偏短句，情绪更明显；content 字数 20~140\n- douyin：偏口语，极短评论风格；content 字数 6~60\n[/PROMPT]\n"
 }

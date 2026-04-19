@@ -7,6 +7,7 @@
 import { defineStore } from 'pinia'
 import { reactive } from 'vue'
 import { fetchProjectRefreshStatus } from '../api/projectRefresh'
+import { fetchCrawlJobProgress } from '../api/crawlJobs'
 
 function nowTs() {
   return Date.now()
@@ -29,6 +30,11 @@ export const useRefreshStore = defineStore('refresh', () => {
         running: false,
         reason: '',
         crawl_job_id: null,
+        stage: 'unknown',
+        stage_started_at: null,
+        stage_updated_at: null,
+        stage_message: null,
+        stage_meta: null,
         started_at: null,
         last_checked_at: 0,
         last_error: '',
@@ -73,9 +79,9 @@ export const useRefreshStore = defineStore('refresh', () => {
       // When backend confirms running, stop the optimistic window.
       if (st.running) st.optimistic_until_ts = 0
 
-      // Keep "refreshing" true while backend says running.
-      // If backend says not running, we still keep refreshing during a short optimistic window
-      // (covers the race where the user just clicked refresh but crawl_job row isn't created yet).
+      // 保持刷新状态，直到 backend 确认不再 running。
+      // 即使请求失败，也保持刷新状态（但不保持 running 状态）
+      // 因为用户可能网络波动导致请求失败，但实际上刷新仍在进行中。
       if (!st.running) {
         const now = nowTs()
         if (st.optimistic_until_ts && now < st.optimistic_until_ts) {
@@ -88,8 +94,7 @@ export const useRefreshStore = defineStore('refresh', () => {
     } catch (e) {
       st.last_checked_at = nowTs()
       st.last_error = e?.message || String(e)
-      // If status polling fails, do not keep the UI stuck in "refreshing" forever.
-      // Keep the optimistic window only for a short period after the user clicked refresh.
+      //如果请求失败，不要轻易取消刷新状态，因为可能是网络问题导致请求失败，但实际上刷新仍在进行中。、
       st.running = false
       const now = nowTs()
       if (st.optimistic_until_ts && now < st.optimistic_until_ts) {
@@ -97,6 +102,53 @@ export const useRefreshStore = defineStore('refresh', () => {
       } else {
         st.refreshing = false
       }
+      return null
+    }
+  }
+
+  async function syncProgress(projectId) {
+    const st = _ensure(projectId)
+    if (!st) return null
+    const jobId = Number(st.crawl_job_id)
+    if (!Number.isFinite(jobId) || jobId <= 0) return null
+
+    try {
+      const res = await fetchCrawlJobProgress(jobId)
+      const item = res?.item || null
+      const nextStage = String(item?.stage || 'unknown').trim().toLowerCase() || 'unknown'
+      const prevStage = String(st.stage || 'unknown').trim().toLowerCase() || 'unknown'
+      const prevUpdatedAt = st.stage_updated_at != null ? String(st.stage_updated_at) : null
+      const prevMsg = st.stage_message != null ? String(st.stage_message) : null
+
+      st.stage = nextStage
+      st.stage_started_at = item?.stage_started_at != null ? String(item.stage_started_at) : null
+      st.stage_updated_at = item?.stage_updated_at != null ? String(item.stage_updated_at) : null
+      st.stage_message = item?.message != null ? String(item.message) : null
+      st.stage_meta = item?.meta ?? null
+
+      const nextUpdatedAt = st.stage_updated_at != null ? String(st.stage_updated_at) : null
+      const nextMsg = st.stage_message != null ? String(st.stage_message) : null
+
+      // Console progress logs:
+      // - stage transitions
+      // - message/meta updates within the same stage (backend uses a single-row progress state)
+      if (nextStage !== prevStage || nextUpdatedAt !== prevUpdatedAt || nextMsg !== prevMsg) {
+        try {
+          console.info('[prodwatch] refresh stage:', {
+            project_id: st.project_id,
+            crawl_job_id: jobId,
+            stage: nextStage,
+            updated_at: st.stage_updated_at,
+            message: st.stage_message,
+            meta: st.stage_meta,
+          })
+        } catch {
+          // ignore console failures
+        }
+      }
+
+      return res
+    } catch {
       return null
     }
   }
@@ -126,7 +178,7 @@ export const useRefreshStore = defineStore('refresh', () => {
     _stopPolling(st.project_id)
   }
 
-  function _startPolling(projectId, { intervalMs = 2000 } = {}) {
+  function _startPolling(projectId, { intervalMs = 1000 } = {}) {
     const pid = Number(projectId)
     if (!Number.isFinite(pid) || pid <= 0) return
     const id = Math.trunc(pid)
@@ -140,6 +192,8 @@ export const useRefreshStore = defineStore('refresh', () => {
         return
       }
       await syncStatus(id)
+      // Poll progress more frequently while running to achieve near real-time stage updates.
+      await syncProgress(id)
       // When backend stops running, stop polling.
       const st2 = byProjectId.get(id)
       if (st2 && !st2.running) {
@@ -164,6 +218,7 @@ export const useRefreshStore = defineStore('refresh', () => {
     isRefreshing,
     setBannerAck,
     syncStatus,
+    syncProgress,
     startRefreshing,
     clearOptimistic,
     stopRefreshing,

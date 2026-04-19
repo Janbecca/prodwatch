@@ -73,13 +73,11 @@
       <el-divider />
       <el-form-item label="模块">
         <el-checkbox-group v-model="form.modules">
-          <el-checkbox value="sentiment">情感</el-checkbox>
-          <el-checkbox value="trend">趋势</el-checkbox>
-          <el-checkbox value="topics">话题</el-checkbox>
-          <el-checkbox value="feature">特征</el-checkbox>
-          <el-checkbox value="spam">垃圾</el-checkbox>
-          <el-checkbox value="competitor">竞品</el-checkbox>
-          <el-checkbox value="strategy">策略</el-checkbox>
+          <el-checkbox value="trend">舆情趋势</el-checkbox>
+          <el-checkbox value="risk">风险点</el-checkbox>
+          <el-checkbox value="feedback">关键用户反馈</el-checkbox>
+          <el-checkbox value="topics">热点话题</el-checkbox>
+          <el-checkbox value="competitor">竞品对比</el-checkbox>
         </el-checkbox-group>
       </el-form-item>
 
@@ -215,7 +213,7 @@ function resetForm() {
   form.platformIds = []
   form.brandIds = []
   form.keywords = []
-  form.modules = ['sentiment', 'trend', 'topics', 'feature', 'spam', 'competitor', 'strategy']
+  form.modules = ['trend', 'risk', 'feedback', 'topics', 'competitor']
 }
 
 function applyPrefill(prefill) {
@@ -320,13 +318,15 @@ async function doCreate() {
     platform_ids: uniqValidInts(form.platformIds),
     brand_ids: uniqValidInts(form.brandIds),
     keywords: uniqNonEmptyStrings(form.keywords),
-    include_sentiment: form.modules.includes('sentiment'),
+    // 执行摘要/策略建议固定存在；模块仅控制看板区块是否生成/展示。
+    include_sentiment: true,
     include_trend: form.modules.includes('trend'),
     include_topics: form.modules.includes('topics'),
-    include_feature_analysis: form.modules.includes('feature'),
-    include_spam: form.modules.includes('spam'),
+    include_feature_analysis: form.modules.includes('risk'),
+    include_spam: form.modules.includes('feedback'),
     include_competitor_compare: form.modules.includes('competitor'),
-    include_strategy: form.modules.includes('strategy'),
+    // 策略建议固定生成（不作为可选模块），避免用户漏选导致报告缺块。
+    include_strategy: true,
   }
 
   try {

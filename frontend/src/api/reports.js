@@ -111,3 +111,17 @@ export async function fetchReportEvidenceList(reportId, { page = 1, pageSize = 2
   qs.set('page_size', String(pageSize))
   return await getJSON(`/api/reports/evidence/list?${qs.toString()}`, { retries: 2, ...options })
 }
+
+export async function fetchReportBoards(
+  reportId,
+  { topBrandN = 4, topTopicN = 15, topRiskKeywordN = 20, feedbackLimit = 20 } = {},
+  options = {}
+) {
+  const qs = new URLSearchParams()
+  qs.set('report_id', String(reportId))
+  qs.set('top_brand_n', String(topBrandN))
+  qs.set('top_topic_n', String(topTopicN))
+  qs.set('top_risk_keyword_n', String(topRiskKeywordN))
+  qs.set('feedback_limit', String(feedbackLimit))
+  return await getJSON(`/api/reports/boards?${qs.toString()}`, { retries: 2, ...options })
+}
