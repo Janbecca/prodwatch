@@ -138,8 +138,6 @@ def bootstrap_if_empty(con: sqlite3.Connection) -> int:
     ts = now_ts()
 
     platforms = [
-        ("weibo", "Weibo"),
-        ("zhihu", "Zhihu"),
         ("douyin", "Douyin"),
         ("xhs", "小红书"),
     ]
@@ -509,188 +507,408 @@ def build_post_candidates(
 ) -> list[PostCandidate]:
     crawl_source = normalize_crawl_source(crawl_source)
     if crawl_source == "media_crawler":
-        # First version: only XHS uses the real crawler; other platforms fall back to mock LLM generation.
-        import logging
-
-        log = logging.getLogger("prodwatch.pipeline")
-        platform_rows = con.execute("SELECT id, code FROM platform;").fetchall()
-        platform_code_map = {int(r["id"]): str(r["code"] or "").strip().lower() for r in platform_rows}
-
-        xhs_targets: list[CrawlTarget] = []
-        other_targets: list[CrawlTarget] = []
-        for t in targets or []:
-            code = platform_code_map.get(int(t.platform_id), "")
-            if code in ("xhs", "xiaohongshu", "rednote"):
-                xhs_targets.append(t)
-            else:
-                other_targets.append(t)
-
-        candidates: list[PostCandidate] = []
-        if xhs_targets:
-            try:
-                candidates.extend(
-                    _build_post_candidates_media_crawler(
-                        con,
-                        project_id,
-                        crawl_job_id,
-                        xhs_targets,
-                        stat_date,
-                        posts_per_target,
-                    )
-                )
-            except Exception:
-                try:
-                    upsert_crawl_job_progress(
-                        con,
-                        crawl_job_id=int(crawl_job_id),
-                        stage="simulate",
-                        message="media_crawler failed; fallback to mock_llm",
-                        meta={"crawl_source": "media_crawler", "fallback": "mock_llm"},
-                    )
-                    con.commit()
-                except Exception:
-                    pass
-                log.exception(
-                    "media_crawler failed; fallback to mock_llm crawl_job_id=%s",
-                    int(crawl_job_id),
-                )
-                # Hard fallback: keep refresh stable if external crawler is misconfigured.
-                candidates.extend(
-                    _build_post_candidates_realistic(
-                        con, project_id, crawl_job_id, xhs_targets, stat_date, posts_per_target
-                    )
-                )
-
-        if other_targets:
-            candidates.extend(
-                _build_post_candidates_realistic(
-                    con, project_id, crawl_job_id, other_targets, stat_date, posts_per_target
-                )
-            )
-        return candidates
+        # Crawler-first strategy (HTTP):
+        # - Call MediaCrawler via HTTP for dy/xhs search mode.
+        # - If unavailable / errors / insufficient results, fall back to mock LLM generation.
+        return _build_post_candidates_media_crawler_http(
+            con=con,
+            project_id=int(project_id),
+            crawl_job_id=int(crawl_job_id),
+            targets=list(targets or []),
+            stat_date=str(stat_date),
+            posts_per_target=int(posts_per_target),
+        )
 
     # Default: mock LLM generation (deterministic seeds -> batch LLM generation).
     # NOTE: this intentionally does NOT generate fixed `posts_per_target` per crawl_job_target.
     return _build_post_candidates_realistic(con, project_id, crawl_job_id, targets, stat_date, posts_per_target)
 
+_FORBIDDEN_FIELD_STITCH_RE = re.compile(r"\b(topic|brand|feature|feeling)\s*=")
+
+
+def _mc_platform_from_platform_code(code: str) -> Optional[str]:
+    c = str(code or "").strip().lower()
+    if c in {"xhs", "xiaohongshu", "rednote"}:
+        return "xhs"
+    if c in {"dy", "douyin"}:
+        return "dy"
+    # Unsupported platform in this project.
+    return None
+
+
+def _mc_source_keyword(item: dict[str, Any]) -> str:
+    # MediaCrawler uses `source_keyword`, but be tolerant.
+    for k in ("source_keyword", "sourceKeyword", "keyword", "search_keyword", "searchKeyword"):
+        v = item.get(k)
+        if v is None:
+            continue
+        s = str(v).strip()
+        if s:
+            return s
+    return ""
+
+
+def _int_or_zero(v: Any) -> int:
+    try:
+        if v is None:
+            return 0
+        if isinstance(v, bool):
+            return int(v)
+        if isinstance(v, (int, float)):
+            return int(v)
+        s = str(v).strip()
+        if s == "":
+            return 0
+        # MediaCrawler stores counts as strings in some stores.
+        return int(float(s))
+    except Exception:
+        return 0
+
+
+def _ts_from_epoch_s(v: Any) -> str:
+    try:
+        n = _int_or_zero(v)
+        if n <= 0:
+            return ""
+        # MediaCrawler stores timestamps in seconds.
+        return datetime.utcfromtimestamp(int(n)).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return ""
+
+
+def _mk_candidate_from_mc(
+    *,
+    mc_platform: str,
+    item: dict[str, Any],
+    project_id: int,
+    crawl_job_id: int,
+    platform_id: int,
+    brand_id: int,
+    crawled_at: str,
+    created_at: str,
+) -> Optional[PostCandidate]:
+    p = str(mc_platform or "").strip().lower()
+    raw_id = ""
+    url = ""
+    title = ""
+    content = ""
+    publish_time = ""
+    author = ""
+    like_count = 0
+    comment_count = 0
+    share_count = 0
+    view_count = 0
+
+    if p == "dy":
+        raw_id = str(item.get("aweme_id") or "").strip()
+        url = str(item.get("aweme_url") or "").strip()
+        title = str(item.get("title") or "").strip()
+        content = str(item.get("desc") or "").strip() or title
+        publish_time = _ts_from_epoch_s(item.get("create_time")) or ""
+        author = str(item.get("nickname") or item.get("user_id") or "").strip()
+        like_count = _int_or_zero(item.get("liked_count"))
+        comment_count = _int_or_zero(item.get("comment_count"))
+        share_count = _int_or_zero(item.get("share_count"))
+        # view_count is not provided by default; keep 0.
+    elif p == "xhs":
+        raw_id = str(item.get("note_id") or "").strip()
+        url = str(item.get("note_url") or "").strip()
+        title = str(item.get("title") or "").strip()
+        content = str(item.get("desc") or "").strip() or title
+        publish_time = _ts_from_epoch_s(item.get("time")) or ""
+        author = str(item.get("nickname") or item.get("user_id") or "").strip()
+        like_count = _int_or_zero(item.get("liked_count"))
+        comment_count = _int_or_zero(item.get("comment_count"))
+        share_count = _int_or_zero(item.get("share_count"))
+        view_count = 0
+    else:
+        return None
+
+    if not raw_id:
+        # Try a generic id field.
+        raw_id = str(item.get("external_post_id") or item.get("post_id") or "").strip()
+    if not url:
+        url = str(item.get("url") or item.get("post_url") or "").strip()
+    if not publish_time:
+        publish_time = created_at
+    if not title:
+        title = content[:60] if content else ""
+    if not content:
+        content = title
+    if not url:
+        # Fallback: keep a stable placeholder; downstream will dedup by dedup_key.
+        url = f"https://mediacrawler.local/{p}/post/{raw_id or sha1_hex(json.dumps(item, ensure_ascii=False, default=str))[:12]}"
+
+    external_post_id = raw_id or sha1_hex(url)[:18]
+    dedup_key = sha1_hex(url)
+    raw_payload = json.dumps(item, ensure_ascii=False, default=str)
+    return PostCandidate(
+        project_id=int(project_id),
+        crawl_job_id=int(crawl_job_id),
+        platform_id=int(platform_id),
+        brand_id=int(brand_id),
+        external_post_id=str(external_post_id),
+        author_name=str(author or ""),
+        title=str(title),
+        content=str(content),
+        post_url=str(url),
+        publish_time=str(publish_time),
+        crawled_at=str(crawled_at),
+        like_count=int(like_count),
+        comment_count=int(comment_count),
+        share_count=int(share_count),
+        view_count=int(view_count),
+        raw_payload=str(raw_payload),
+        dedup_key=str(dedup_key),
+        created_at=str(created_at),
+    )
+
+
+def _build_post_candidates_media_crawler_http(
+    *,
+    con: sqlite3.Connection,
+    project_id: int,
+    crawl_job_id: int,
+    targets: list[CrawlTarget],
+    stat_date: str,
+    posts_per_target: int,
+) -> list[PostCandidate]:
     """
-    Legacy implementation (kept as reference; no longer executed):
+    Crawler-first implementation:
+    - Use MediaCrawler WebUI API via HTTP (no import of external crawler modules).
+    - Platforms supported: dy/xhs.
+    - Query: product_category + brand_name
+    - If crawler fails/insufficient, fall back to mock LLM generation (per platform+brand).
+    """
+    from backend.services.mediacrawler_http import MediaCrawlerHttpClient
+    import os
 
-    # Local import to keep pipeline_main's global surface stable (minimal refactor boundary).
-    from backend.services.crawler_generation_service import CrawlContext, get_crawler_generation_service
-
-    platform_map = {
-        int(r["id"]): (str(r["code"]), str(r["name"]))
-        for r in con.execute("SELECT id, code, name FROM platform;").fetchall()
-    }
-    brand_map = {
-        int(r["id"]): str(r["name"])
-        for r in con.execute("SELECT id, name FROM brand;").fetchall()
-    }
     ts = now_ts()
-    base_date = datetime.strptime(stat_date, "%Y-%m-%d")
+    crawled_at = ts
+    created_at = ts
+
+    # Limits: keep small to reduce platform ban risk.
+    try:
+        max_posts_total = int(str(os.environ.get("PRODWATCH_MANUAL_REFRESH_MAX_POSTS_TOTAL") or "60").strip())
+    except Exception:
+        max_posts_total = 60
+    max_posts_total = max(5, min(int(max_posts_total), 500))
+
+    platform_rows = con.execute("SELECT id, code FROM platform;").fetchall()
+    platform_code_by_id = {int(r["id"]): str(r["code"] or "").strip().lower() for r in platform_rows}
+
+    brand_rows = con.execute("SELECT id, name FROM brand;").fetchall()
+    brand_name_by_id = {int(r["id"]): str(r["name"] or "").strip() for r in brand_rows}
+
+    project_row = con.execute("SELECT product_category FROM project WHERE id=? LIMIT 1;", (int(project_id),)).fetchone()
+    product_category = str(project_row["product_category"] or "").strip() if project_row else ""
+
+    # Build unique platform+brand pairs from targets (ignore target.keyword).
+    pair_to_query: dict[tuple[int, int], str] = {}
+    pair_to_mc_platform: dict[tuple[int, int], str] = {}
+    mc_platform_to_pairs: dict[str, list[tuple[int, int]]] = {}
+    for t in targets or []:
+        try:
+            pid = int(t.platform_id)
+            bid = int(t.brand_id)
+        except Exception:
+            continue
+        code = platform_code_by_id.get(pid, "")
+        mc_platform = _mc_platform_from_platform_code(code)
+        if not mc_platform:
+            continue
+        brand_name = brand_name_by_id.get(bid, f"b{bid}")
+        q = f"{product_category} {brand_name}".strip()
+        key = (pid, bid)
+        if key not in pair_to_query:
+            pair_to_query[key] = q
+            pair_to_mc_platform[key] = mc_platform
+            mc_platform_to_pairs.setdefault(mc_platform, []).append(key)
+
+    # For unsupported platforms in this project, fall back to mock generation directly.
+    unsupported_targets: list[CrawlTarget] = []
+    for t in targets or []:
+        code = platform_code_by_id.get(int(t.platform_id), "")
+        if _mc_platform_from_platform_code(code) is None:
+            unsupported_targets.append(t)
+
+    client = MediaCrawlerHttpClient()
+
+    def _progress(message: str, meta: Optional[dict[str, Any]] = None) -> None:
+        try:
+            upsert_crawl_job_progress(
+                con,
+                crawl_job_id=int(crawl_job_id),
+                stage="simulate",
+                message=str(message),
+                meta=meta,
+            )
+            con.commit()
+        except Exception:
+            pass
+
+    _progress(
+        "crawler_first started",
+        {
+            "strategy": "prefer_media_crawler_then_llm",
+            "platforms": sorted(list(mc_platform_to_pairs.keys())),
+            "posts_per_target": int(posts_per_target),
+            "max_posts_total": int(max_posts_total),
+            "product_category": product_category,
+        },
+    )
+
+    crawler_available = client.health()
+    env_ok, env_msg = client.env_check_best_effort()
+    if not crawler_available:
+        _progress(
+            "mediacrawler unavailable; fallback to mock_llm",
+            {"ok": False, "health": False, "env_ok": bool(env_ok), "env_msg": str(env_msg)},
+        )
+        # Full fallback (crawler unreachable).
+        candidates = []
+        if targets:
+            candidates.extend(
+                _build_post_candidates_realistic(con, project_id, crawl_job_id, targets, stat_date, posts_per_target)
+            )
+        return candidates
+
+    if not env_ok:
+        # Env check is best-effort; do not block crawling. The actual /crawler/start result is the source of truth.
+        _progress(
+            "mediacrawler env_check failed; continue anyway",
+            {"ok": False, "health": True, "env_ok": False, "env_msg": str(env_msg)},
+        )
 
     candidates: list[PostCandidate] = []
-    svc = get_crawler_generation_service()
-    for t in targets:
-        mark_crawl_job_target_status(con, t.id, "running")
-        platform_code, _ = platform_map.get(t.platform_id, (f"p{t.platform_id}", ""))
-        brand_name = brand_map.get(t.brand_id, f"b{t.brand_id}")
-        ctx = CrawlContext(
-            project_id=int(project_id),
-            crawl_job_id=int(crawl_job_id),
-            stat_date=str(stat_date),
-            posts_per_target=int(posts_per_target),
-            platform_id=int(t.platform_id),
-            brand_id=int(t.brand_id),
-            keyword=str(t.keyword),
-            target_id=int(t.id),
-            platform_code=str(platform_code),
-            brand_name=str(brand_name),
+    crawled_count_by_pair: dict[tuple[int, int], int] = {k: 0 for k in pair_to_query.keys()}
+
+    # Run per platform sequentially (MediaCrawler is a global singleton).
+    for mc_platform, pairs in mc_platform_to_pairs.items():
+        pairs = list(pairs or [])
+        # One crawl per platform for all brand queries.
+        queries = [pair_to_query[p] for p in pairs if pair_to_query.get(p)]
+        # Respect max_posts_total by limiting preview limit; still let crawler fetch whatever it does.
+        preview_limit = min(max_posts_total * 4, max(200, len(queries) * max(1, int(posts_per_target)) * 4))
+
+        _progress(
+            f"mediacrawler start platform={mc_platform}",
+            {"platform": mc_platform, "queries": int(len(queries)), "preview_limit": int(preview_limit)},
         )
-        posts = svc.generate_posts(ctx, con=con)
-        for p in posts:
-            candidates.append(
-                PostCandidate(
-                    project_id=int(p["project_id"]),
-                    crawl_job_id=int(p["crawl_job_id"]),
-                    platform_id=int(p["platform_id"]),
-                    brand_id=int(p["brand_id"]),
-                    external_post_id=str(p["external_post_id"]),
-                    author_name=str(p["author_name"]),
-                    title=str(p["title"]),
-                    content=str(p["content"]),
-                    post_url=str(p["post_url"]),
-                    publish_time=str(p["publish_time"]),
-                    crawled_at=str(p["crawled_at"]),
-                    like_count=int(p["like_count"]),
-                    comment_count=int(p["comment_count"]),
-                    share_count=int(p["share_count"]),
-                    view_count=int(p["view_count"]),
-                    raw_payload=str(p["raw_payload"]),
-                    dedup_key=str(p["dedup_key"]),
-                    created_at=str(p["created_at"]),
-                )
-            )
-        mark_crawl_job_target_status(con, t.id, "success")
-        continue
-        for i in range(posts_per_target):
-            publish_dt = base_date + timedelta(minutes=7 * i + (t.id % 5))
-            publish_time = publish_dt.strftime("%Y-%m-%d %H:%M:%S")
 
-            external_post_id = sha1_hex(f"{project_id}|{platform_code}|{t.brand_id}|{t.keyword}|{stat_date}|{i}")[
-                :18
-            ]
-            post_url = f"https://example.local/{platform_code}/post/{external_post_id}"
-            dedup_key = sha1_hex(post_url)
-
-            feature_terms = ["battery", "camera", "price", "lag", "overheat", "support"]
-            feature_term = feature_terms[(t.id + i) % len(feature_terms)]
-            polarity = "good" if (t.id + i) % 3 == 0 else ("ok" if (t.id + i) % 3 == 1 else "bad")
-
-            title = f"{brand_name} {t.keyword} 体验分享"
-            content = f"[{platform_code}] topic={t.keyword} brand={brand_name} feature={feature_term} feeling={polarity}"
-            author_name = f"user_{sha1_hex(f'{platform_code}|{t.brand_id}|{i}')[:6]}"
-
-            raw_payload = json.dumps(
+        res = client.run_search_and_collect(platform=mc_platform, keywords_csv=",".join(queries), preview_limit=int(preview_limit))
+        if not res.ok:
+            _progress(
+                f"mediacrawler failed platform={mc_platform}; fallback to mock_llm",
                 {
-                    "platform": platform_code,
-                    "brand_id": t.brand_id,
-                    "keyword": t.keyword,
-                    "generated": True,
-                    "idx": i,
+                    "platform": mc_platform,
+                    "ok": False,
+                    "error": str(res.error or ""),
+                    "took_ms": int(res.took_ms),
+                    "new_files": list(res.new_files),
+                    "chosen_file": str(res.chosen_file or ""),
+                    "logs_tail": list(res.logs_tail)[-20:],
                 },
-                ensure_ascii=False,
             )
+            continue
 
-            candidates.append(
-                PostCandidate(
-                    project_id=project_id,
-                    crawl_job_id=crawl_job_id,
-                    platform_id=t.platform_id,
-                    brand_id=t.brand_id,
-                    external_post_id=external_post_id,
-                    author_name=author_name,
-                    title=title,
-                    content=content,
-                    post_url=post_url,
-                    publish_time=publish_time,
-                    crawled_at=ts,
-                    like_count=10 + (t.id + i) % 30,
-                    comment_count=2 + (t.id + 2 * i) % 15,
-                    share_count=(t.id + i) % 7,
-                    view_count=50 + (t.id + i) % 500,
-                    raw_payload=raw_payload,
-                    dedup_key=dedup_key,
-                    created_at=ts,
+        items = list(res.items or [])
+        # Attribute items back to queries using source_keyword.
+        by_query: dict[str, list[dict[str, Any]]] = {q: [] for q in queries}
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            q = _mc_source_keyword(it)
+            if q and q in by_query and len(by_query[q]) < max(1, int(posts_per_target)):
+                by_query[q].append(it)
+
+        # Build candidates per pair.
+        total_kept = 0
+        for platform_id, brand_id in pairs:
+            q = pair_to_query.get((platform_id, brand_id), "")
+            kept = by_query.get(q) or []
+            for it in kept[: max(1, int(posts_per_target))]:
+                c = _mk_candidate_from_mc(
+                    mc_platform=mc_platform,
+                    item=it,
+                    project_id=int(project_id),
+                    crawl_job_id=int(crawl_job_id),
+                    platform_id=int(platform_id),
+                    brand_id=int(brand_id),
+                    crawled_at=str(crawled_at),
+                    created_at=str(created_at),
                 )
-            )
-        mark_crawl_job_target_status(con, t.id, "success")
+                if c is not None:
+                    candidates.append(c)
+                    total_kept += 1
+            crawled_count_by_pair[(platform_id, brand_id)] = min(max(0, len(kept)), int(posts_per_target))
+
+        _progress(
+            f"mediacrawler done platform={mc_platform}",
+            {
+                "platform": mc_platform,
+                "ok": True,
+                "took_ms": int(res.took_ms),
+                "new_files": list(res.new_files),
+                "chosen_file": str(res.chosen_file or ""),
+                "preview_total": int(res.preview_total),
+                "kept_total": int(total_kept),
+                "kept_by_query": {k: int(len(v or [])) for k, v in by_query.items() if (v or [])},
+                "logs_tail": list(res.logs_tail)[-20:],
+            },
+        )
+
+    # Compute fallback gaps (crawler failure or insufficient results).
+    missing_by_pair: dict[tuple[int, int], int] = {}
+    offset_by_pair: dict[tuple[int, int], int] = {}
+    fallback_targets: list[CrawlTarget] = []
+    seen_pairs: set[tuple[int, int]] = set()
+    for t in targets or []:
+        key = (int(t.platform_id), int(t.brand_id))
+        if key in seen_pairs:
+            continue
+        seen_pairs.add(key)
+        want = max(1, int(posts_per_target))
+        got = int(crawled_count_by_pair.get(key, 0))
+        need = max(0, want - got)
+        if need <= 0:
+            continue
+        missing_by_pair[key] = int(need)
+        offset_by_pair[key] = int(got)
+        fallback_targets.append(t)
+
+    # Include unsupported platforms in fallback.
+    # Keep their unique pairs and generate full posts_per_target for them.
+    for t in unsupported_targets:
+        key = (int(t.platform_id), int(t.brand_id))
+        if key in missing_by_pair:
+            continue
+        missing_by_pair[key] = max(1, int(posts_per_target))
+        offset_by_pair[key] = 0
+        fallback_targets.append(t)
+
+    if missing_by_pair:
+        _progress(
+            "mock_llm fallback start",
+            {"missing_pairs": int(len(missing_by_pair)), "missing_total": int(sum(missing_by_pair.values()))},
+        )
+        fallback_candidates = _build_post_candidates_realistic(
+            con,
+            int(project_id),
+            int(crawl_job_id),
+            fallback_targets,
+            str(stat_date),
+            int(posts_per_target),
+            posts_per_pair=missing_by_pair,
+            seed_index_offset_by_pair=offset_by_pair,
+        )
+        candidates.extend(list(fallback_candidates or []))
+        _progress(
+            "mock_llm fallback done",
+            {"generated_total": int(len(fallback_candidates or [])), "missing_pairs": int(len(missing_by_pair))},
+        )
+
     return candidates
-    """
-
-
-_FORBIDDEN_FIELD_STITCH_RE = re.compile(r"\b(topic|brand|feature|feeling)\s*=")
 
 
 def _build_post_candidates_realistic(
@@ -700,6 +918,9 @@ def _build_post_candidates_realistic(
     targets: list[CrawlTarget],
     stat_date: str,
     posts_per_target: int,
+    *,
+    posts_per_pair: Optional[dict[tuple[int, int], int]] = None,
+    seed_index_offset_by_pair: Optional[dict[tuple[int, int], int]] = None,
 ) -> list[PostCandidate]:
     """
     Realism-oriented simulated crawl:
@@ -764,8 +985,24 @@ def _build_post_candidates_realistic(
     for platform_id, brand_id in pairs:
         platform_code, platform_name = platform_map.get(int(platform_id), (f"p{platform_id}", ""))
         brand_name = brand_map.get(int(brand_id), f"b{brand_id}")
-        for i in range(max(1, int(posts_per_target))):
-            seed_id = f"{int(crawl_job_id)}|{int(platform_id)}|{int(brand_id)}|{i}"
+        n = int(posts_per_target)
+        if posts_per_pair is not None:
+            try:
+                n = int(posts_per_pair.get((int(platform_id), int(brand_id)), 0))
+            except Exception:
+                n = 0
+        if n <= 0:
+            continue
+        offset = 0
+        if seed_index_offset_by_pair is not None:
+            try:
+                offset = int(seed_index_offset_by_pair.get((int(platform_id), int(brand_id)), 0))
+            except Exception:
+                offset = 0
+        offset = max(0, offset)
+        for i in range(int(n)):
+            seed_i = int(offset) + int(i)
+            seed_id = f"{int(crawl_job_id)}|{int(platform_id)}|{int(brand_id)}|{seed_i}"
             publish_dt = base_dt + timedelta(minutes=(int(platform_id) % 7) * 11 + i * 7 + (int(brand_id) % 5))
             publish_time = publish_dt.strftime("%Y-%m-%d %H:%M:%S")
             external_post_id = sha1_hex(f"gen|{seed_id}")[:18]
@@ -914,18 +1151,37 @@ def _build_post_candidates_realistic(
                     batch_map[sid] = item
                     generated_map[sid] = item
 
+        # Best-effort: do not fail the whole refresh when LLM returns incomplete items.
+        # Missing seeds will fall back to deterministic title/content later.
         missing_batch = [str(s["seed_id"]) for s in batch if str(s["seed_id"]) not in batch_map]
         if missing_batch:
-            raise RuntimeError(
-                f"crawler_generation missing outputs for seeds (batch {bi}/{len(batches)}): "
-                f"{missing_batch[:5]} (total_missing={len(missing_batch)})"
-            )
+            try:
+                log.error(
+                    "crawler_generation missing outputs for seeds (batch %s/%s) missing=%s total_missing=%s",
+                    bi,
+                    len(batches),
+                    missing_batch[:5],
+                    len(missing_batch),
+                )
+            except Exception:
+                pass
+            for sid in missing_batch:
+                generated_map.setdefault(str(sid), {})
 
     if not seeds:
         raise RuntimeError("crawler_generation seeds is empty")
     if len(generated_map) < len(seeds):
         missing = [str(s["seed_id"]) for s in seeds if str(s["seed_id"]) not in generated_map]
-        raise RuntimeError(f"crawler_generation missing outputs for seeds: {missing[:5]} (total_missing={len(missing)})")
+        try:
+            log.error(
+                "crawler_generation missing outputs for seeds (final) missing=%s total_missing=%s",
+                missing[:5],
+                len(missing),
+            )
+        except Exception:
+            pass
+        for sid in missing:
+            generated_map.setdefault(str(sid), {})
 
     invalid_fallback_count = 0
 
@@ -950,21 +1206,15 @@ def _build_post_candidates_realistic(
             kw = "使用感受"
         platform_code = str(seed.get("platform_code") or "").strip().lower()
         h = int(sha1_hex(sid or brand)[:6], 16)
-        if platform_code == "douyin":
+        if platform_code in {"douyin", "dy"}:
             pool = [
                 f"{brand}这{kw}我是真没想到…",
                 f"{kw}这块还行，但也不是完美",
                 f"用下来{kw}有点小问题，先观望",
                 f"{brand}整体还可以，{kw}看个人需求",
             ]
-        elif platform_code == "zhihu":
-            pool = [
-                f"最近在用{brand}，主要关注点是「{kw}」。总体来说体验还行，但也有一些细节需要适应。",
-                f"如果你特别在意{kw}，建议先看一圈真实反馈再决定。我的结论是：可用，但别抱过高预期。",
-                f"围绕{kw}这个点，我的感受是中规中矩。优点有，短板也有，取决于你的使用场景。",
-            ]
         else:
-            # weibo (default)
+            # default (short text)
             pool = [
                 f"这两天用{brand}，{kw}这块我感觉还行，但也有点小槽点。",
                 f"{brand}的{kw}被讨论挺多，我自己用下来是：能接受，但还有优化空间。",
@@ -1052,109 +1302,6 @@ def _build_post_candidates_realistic(
     return candidates
 
 
-def _build_post_candidates_media_crawler(
-    con: sqlite3.Connection,
-    project_id: int,
-    crawl_job_id: int,
-    targets: list[CrawlTarget],
-    stat_date: str,
-    posts_per_target: int,
-) -> list[PostCandidate]:
-    """
-    Real crawl mode (external MediaCrawler integration), first version:
-    - Only Xiaohongshu (XHS) search results
-    - Crawl by each target's keyword (conservative fallback if keyword is empty/"__all__")
-    - Best-effort per-target error isolation (do not fail the whole refresh)
-    """
-    import logging
-    import os
-
-    from backend.services.external_crawlers.media_crawler_adapter import MediaCrawlerAdapter
-    from backend.services.external_crawlers.media_crawler_mapper import map_xhs_item_to_post_candidate
-
-    log = logging.getLogger("prodwatch.pipeline")
-
-    if not targets:
-        return []
-
-    brand_rows = con.execute("SELECT id, name FROM brand;").fetchall()
-    brand_map = {int(r["id"]): str(r["name"] or "").strip() for r in brand_rows}
-
-    cookies = os.environ.get("PRODWATCH_XHS_COOKIES")
-    adapter = MediaCrawlerAdapter()
-    crawled_at = now_ts()
-
-    candidates: list[PostCandidate] = []
-    errors: list[str] = []
-    for t in targets:
-        try:
-            mark_crawl_job_target_status(con, int(t.id), "running")
-        except Exception:
-            pass
-
-        kw = str(t.keyword or "").strip()
-        if kw == "" or kw == "__all__":
-            # Conservative strategy: avoid broad crawling; use brand name as keyword if available.
-            kw = brand_map.get(int(t.brand_id), "")
-
-        if kw == "":
-            try:
-                mark_crawl_job_target_status(con, int(t.id), "success")
-            except Exception:
-                pass
-            continue
-
-        try:
-            items = adapter.fetch_xhs_posts(keyword=str(kw), limit=int(posts_per_target), cookies=cookies)
-            for it in items or []:
-                if not isinstance(it, dict):
-                    continue
-                raw_json = it.get("raw_json") if isinstance(it.get("raw_json"), str) else None
-                candidates.append(
-                    map_xhs_item_to_post_candidate(
-                        it,
-                        project_id=int(project_id),
-                        crawl_job_id=int(crawl_job_id),
-                        platform_id=int(t.platform_id),
-                        brand_id=int(t.brand_id),
-                        crawled_at=str(crawled_at),
-                        created_at=str(crawled_at),
-                        raw_payload_json=raw_json,
-                    )
-                )
-            try:
-                mark_crawl_job_target_status(con, int(t.id), "success")
-            except Exception:
-                pass
-        except Exception as e:
-            # Best-effort: keep the overall refresh stable.
-            errors.append(f"{type(e).__name__}: {e}")
-            log.warning(
-                "media_crawler target failed crawl_job_id=%s target_id=%s platform_id=%s brand_id=%s keyword=%s err=%s",
-                int(crawl_job_id),
-                int(t.id),
-                int(t.platform_id),
-                int(t.brand_id),
-                str(kw),
-                str(e),
-            )
-            try:
-                mark_crawl_job_target_status(con, int(t.id), "failed")
-            except Exception:
-                pass
-            continue
-
-    # If media_crawler was requested but produced nothing due to errors, let caller decide fallback policy.
-    if not candidates and errors:
-        raise RuntimeError(
-            "media_crawler produced 0 candidates due to errors. "
-            "Check PRODWATCH_XHS_COOKIES / MediaCrawler deps. "
-            f"First_error={errors[0]}"
-        )
-
-    return candidates
-
-
 def _merge_raw_payload_text(raw_payload: Any, extra: dict[str, Any]) -> str:
     base: dict[str, Any] = {}
     try:
@@ -1172,8 +1319,6 @@ def _fallback_title(seed: dict[str, Any]) -> str:
     platform_code = str(seed.get("platform_code") or "")
     topic = str(seed.get("topic") or "体验")
     brand = str(seed.get("brand_name") or "").strip()
-    if str(platform_code).lower() == "zhihu":
-        return f"关于「{topic}」的一些观察"
     if brand:
         return f"{brand} {topic} 讨论"
     return f"{topic} 讨论"
@@ -1203,13 +1348,6 @@ def _fallback_content(seed: dict[str, Any]) -> str:
             f"{topic}就图个{mood}，别太上头",
             f"{kw}随便聊聊，{topic}最近挺火",
         ]
-    elif c == "zhihu":
-        pool = [
-            f"最近看到很多人在讨论「{topic}」。结合我这段时间的体验，整体感受是：{mood}。",
-            f"如果从「{topic}」这个维度看，很多结论其实取决于使用场景（通勤/游戏/办公）。我个人更在意的是稳定性。",
-            f"关于「{topic}」，我更倾向于先看一段时间的口碑沉淀，而不是只看单次热度。{kw}这些线索只能作为参考。",
-        ]
-        pool = [p + " 希望后续能有更多真实样本来验证，而不是只看参数。" for p in pool]
     else:
         pool = [
             f"刷到一堆{topic}的讨论，{mood}…{kw}也太真实了",

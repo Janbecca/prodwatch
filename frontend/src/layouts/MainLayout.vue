@@ -134,6 +134,8 @@ watch(
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  padding: 12px;
+  box-sizing: border-box;
 }
 .refresh-banner {
   margin-bottom: 10px;
