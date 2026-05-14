@@ -5,9 +5,13 @@ from __future__ import annotations
 import logging
 import sqlite3
 import time
+import re
+import os
+import urllib.request
+from urllib.parse import quote
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
 from backend.api.db import get_db
@@ -25,6 +29,11 @@ from backend.report_chain_e import (
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 log = logging.getLogger("prodwatch.reports")
+
+
+def _text_or_dash(v: Any) -> str:
+    s = str(v or "").strip()
+    return s if s else "-"
 
 def _has_column(db: sqlite3.Connection, table: str, col: str) -> bool:
     try:
@@ -362,6 +371,111 @@ def report_detail(
         }
 
     return {"report_id": int(report_id), "item": item}
+
+
+@router.get("/export")
+def export_report(
+    report_id: int = Query(..., ge=1),
+    format: str = Query("pdf", pattern="^(pdf)$"),
+    db: sqlite3.Connection = Depends(get_db),
+) -> Response:
+    row = db.execute(
+        """
+        SELECT
+          r.id,
+          r.project_id,
+          r.title,
+          r.report_type,
+          r.data_start_date,
+          r.data_end_date,
+          r.status,
+          r.content_markdown,
+          r.created_at,
+          p.name AS project_name
+        FROM report r
+        LEFT JOIN project p ON p.id=r.project_id
+        WHERE r.id=?
+        LIMIT 1;
+        """,
+        (int(report_id),),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="report not found")
+
+    status = str(row["status"] or "").lower()
+    if status not in {"success", "done"}:
+        raise HTTPException(status_code=409, detail="only completed reports can be exported")
+    # HTML -> PDF via Playwright, preserving frontend ECharts rendering.
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"playwright not available: {e}")
+
+    frontend_base = ""
+    # Priority: env -> DB setting -> common local dev ports
+    env_base = str(os.getenv("PRODWATCH_FRONTEND_BASE_URL") or "").strip()
+    if env_base:
+        frontend_base = env_base.rstrip("/")
+    try:
+        cfg = db.execute("SELECT value FROM setting WHERE key='frontend_base_url' LIMIT 1;").fetchone()
+        v = str((cfg["value"] if cfg else "") or "").strip()
+        if v and not frontend_base:
+            frontend_base = v.rstrip("/")
+    except Exception:
+        pass
+
+    candidates = [frontend_base] if frontend_base else []
+    for u in [
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+        "http://127.0.0.1:4173",
+        "http://localhost:4173",
+        "http://127.0.0.1:8080",
+        "http://localhost:8080",
+    ]:
+        if u not in candidates:
+            candidates.append(u)
+
+    chosen_base = ""
+    for base in candidates:
+        try:
+            req = urllib.request.Request(f"{base}/", method="GET")
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                if int(getattr(resp, "status", 0) or 0) < 500:
+                    chosen_base = base
+                    break
+        except Exception:
+            continue
+    if not chosen_base:
+        raise HTTPException(
+            status_code=500,
+            detail="frontend is not reachable; please start frontend dev server or set PRODWATCH_FRONTEND_BASE_URL/frontend_base_url",
+        )
+
+    export_url = f"{chosen_base}/report-export/{int(report_id)}?export=1"
+    pdf_bytes: bytes | None = None
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(viewport={"width": 1400, "height": 2200}, device_scale_factor=2)
+            page = context.new_page()
+            page.goto(export_url, wait_until="networkidle", timeout=120000)
+            page.wait_for_function("window.__REPORT_EXPORT_READY__ === true", timeout=120000)
+            page.emulate_media(media="screen")
+            pdf_bytes = page.pdf(
+                format="A4",
+                print_background=True,
+                margin={"top": "12mm", "right": "10mm", "bottom": "12mm", "left": "10mm"},
+            )
+            context.close()
+            browser.close()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"render pdf failed: {e}")
+
+    safe_title = re.sub(r'[\\/:*?"<>|]+', "_", _text_or_dash(row["title"]))[:80] or f"report_{int(report_id)}"
+    filename = f"{safe_title}_{int(report_id)}.pdf"
+    headers = {"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"}
+    return Response(content=pdf_bytes or b"", media_type="application/pdf", headers=headers)
 
 
 @router.delete("/delete")

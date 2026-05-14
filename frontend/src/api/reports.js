@@ -125,3 +125,30 @@ export async function fetchReportBoards(
   qs.set('feedback_limit', String(feedbackLimit))
   return await getJSON(`/api/reports/boards?${qs.toString()}`, { retries: 2, ...options })
 }
+
+export async function exportReport(reportId, { format = 'pdf' } = {}, options = {}) {
+  const qs = new URLSearchParams()
+  qs.set('report_id', String(reportId))
+  qs.set('format', String(format || 'pdf'))
+  const res = await fetch(`/api/reports/export?${qs.toString()}`, {
+    method: 'GET',
+    headers: { Accept: 'application/pdf, application/octet-stream' },
+    signal: options.signal,
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`HTTP ${res.status}: ${text || res.statusText}`)
+  }
+  const blob = await res.blob()
+  const disposition = String(res.headers.get('Content-Disposition') || '')
+  let filename = `report_${Number(reportId) || 'download'}.pdf`
+  const m = disposition.match(/filename\*=UTF-8''([^;]+)/i)
+  if (m && m[1]) {
+    try {
+      filename = decodeURIComponent(m[1])
+    } catch {
+      // keep default filename
+    }
+  }
+  return { blob, filename }
+}

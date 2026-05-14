@@ -5,7 +5,7 @@
     <PageSection title="报告详情">
       <template #extra>
         <el-button
-          v-if="report"
+          v-if="report && !isExportMode"
           size="small"
           type="success"
           plain
@@ -141,7 +141,7 @@
       <!-- 4) 关键用户反馈看板 -->
       <PageSection v-if="showFeedback" title="关键用户反馈">
         <template #extra>
-          <el-button v-if="report" size="small" @click="openEvidence">查看全部证据</el-button>
+          <el-button v-if="report && !isExportMode" size="small" @click="openEvidence">查看全部证据</el-button>
         </template>
 
         <el-skeleton v-if="aggLoading" :rows="2" animated />
@@ -217,14 +217,14 @@
       </PageSection>
 
       <!-- 原始内容（可选） -->
-      <el-collapse>
+      <el-collapse v-if="!isExportMode">
         <el-collapse-item title="原始内容（Markdown，调试用）" name="raw">
           <SafeMarkdown :markdown="rawMarkdown || ''" />
         </el-collapse-item>
       </el-collapse>
     </template>
 
-    <ReportEvidenceDialog />
+    <ReportEvidenceDialog v-if="!isExportMode" />
   </el-space>
 </template>
 
@@ -269,6 +269,7 @@ const evidenceError = ref('')
 const evidenceItems = ref([])
 
 const trendMode = ref('positive')
+const isExportMode = computed(() => String(route.query?.export || '') === '1' || String(route.name || '') === 'report-export')
 
 let ac = null
 let aggAc = null
@@ -650,14 +651,27 @@ watch(
 )
 
 onMounted(() => {
+  window.__REPORT_EXPORT_READY__ = false
   projectsStore.fetchProjects()
 })
 
 onBeforeUnmount(() => {
+  window.__REPORT_EXPORT_READY__ = false
   ac?.abort()
   aggAc?.abort()
   evidenceAc?.abort()
 })
+
+watch(
+  [loading, aggLoading, report, error, aggError],
+  () => {
+    if (!isExportMode.value) return
+    const okReport = !!report.value && (report.value?.status === 'success' || report.value?.status === 'done')
+    const ready = okReport && !loading.value && !aggLoading.value && !error.value && !aggError.value
+    window.__REPORT_EXPORT_READY__ = ready
+  },
+  { immediate: true, deep: false }
+)
 </script>
 
 <style scoped>

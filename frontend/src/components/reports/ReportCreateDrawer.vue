@@ -73,11 +73,11 @@
       <el-divider />
       <el-form-item label="模块">
         <el-checkbox-group v-model="form.modules">
-          <el-checkbox value="trend">舆情趋势</el-checkbox>
-          <el-checkbox value="risk">风险点</el-checkbox>
-          <el-checkbox value="feedback">关键用户反馈</el-checkbox>
-          <el-checkbox value="topics">热点话题</el-checkbox>
-          <el-checkbox value="competitor">竞品对比</el-checkbox>
+          <el-checkbox label="trend">舆情趋势</el-checkbox>
+          <el-checkbox label="risk">风险点</el-checkbox>
+          <el-checkbox label="feedback">关键用户反馈</el-checkbox>
+          <el-checkbox label="topics">热点话题</el-checkbox>
+          <el-checkbox label="competitor">竞品对比</el-checkbox>
         </el-checkbox-group>
       </el-form-item>
 
@@ -173,7 +173,7 @@ const form = reactive({
   platformIds: [],
   brandIds: [],
   keywords: [],
-  modules: ['sentiment', 'trend', 'topics', 'feature', 'spam', 'competitor', 'strategy'],
+  modules: ['trend', 'risk', 'feedback', 'topics', 'competitor'],
 })
 
 const isRefreshing = computed(() => refreshStore.isRefreshing(form.projectId))
@@ -225,7 +225,18 @@ function applyPrefill(prefill) {
   if (Array.isArray(prefill.platformIds)) form.platformIds = prefill.platformIds.slice()
   if (Array.isArray(prefill.brandIds)) form.brandIds = prefill.brandIds.slice()
   if (Array.isArray(prefill.keywords)) form.keywords = prefill.keywords.slice()
-  if (Array.isArray(prefill.modules)) form.modules = prefill.modules.slice()
+  if (Array.isArray(prefill.modules)) {
+    const allowed = new Set(['trend', 'risk', 'feedback', 'topics', 'competitor'])
+    const normalized = new Set()
+    for (const m of prefill.modules) {
+      const v = String(m || '').trim()
+      if (!v) continue
+      if (v === 'feature') normalized.add('risk')
+      else if (v === 'spam') normalized.add('feedback')
+      else normalized.add(v)
+    }
+    form.modules = Array.from(normalized).filter((v) => allowed.has(v))
+  }
 }
 
 async function loadScope(pid) {

@@ -177,11 +177,6 @@ export const useDashboardStore = defineStore('dashboard', () => {
       // First version: always prefer real crawl (external MediaCrawler) on manual refresh.
       // Keep API backward compatible: backend defaults to mock_llm if this field is omitted.
       const crawlSource = import.meta.env.VITE_MANUAL_REFRESH_CRAWL_SOURCE || 'media_crawler'
-      try {
-        console.info('[prodwatch] manual refresh request:', { project_id: pid, crawl_source: crawlSource })
-      } catch {
-        // ignore
-      }
       const res = await manualRefreshProject(pid, { crawl_source: crawlSource })
       // Request returned quickly (refresh runs in background). Clear optimistic window;
       // /refresh/status polling decides final state.
@@ -204,20 +199,22 @@ export const useDashboardStore = defineStore('dashboard', () => {
 
       // 记录刷新来源（mock/llm/unknown），便于后续分析不同来源的刷新表现差异。
       // 注意该日志可能会失败（例如 res 结构不符合预期），但不应影响用户正常使用，因此放在独立的
-      try {
-        const pg = res?.post_generation_plan || res?.post_generation || null
-        const by = String(pg?.generated_by || '').toLowerCase()
-        const label = by === 'mock' ? 'mock' : by === 'llm' ? 'llm' : 'unknown'
-        console.info('[prodwatch] manual refresh post generation:', {
-          project_id: pid,
-          crawl_job_id: lastRefreshJobId.value,
-          generated_by: label,
-          provider: pg?.provider || '',
-          model: pg?.model || '',
-          prompt_version: pg?.prompt_version || '',
-        })
-      } catch {
-        // ignore logging failures
+      if (import.meta.env.DEV) {
+        try {
+          const pg = res?.post_generation_plan || res?.post_generation || null
+          const by = String(pg?.generated_by || '').toLowerCase()
+          const label = by === 'mock' ? 'mock' : by === 'llm' ? 'llm' : 'unknown'
+          console.info('[prodwatch] manual refresh post generation:', {
+            project_id: pid,
+            crawl_job_id: lastRefreshJobId.value,
+            generated_by: label,
+            provider: pg?.provider || '',
+            model: pg?.model || '',
+            prompt_version: pg?.prompt_version || '',
+          })
+        } catch {
+          // ignore logging failures
+        }
       }
 
       if (lastRefreshJobId.value) {

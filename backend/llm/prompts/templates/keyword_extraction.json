@@ -1,5 +1,5 @@
 {
   "task_type": "keyword_extraction",
-  "version": "v4",
-  "template": "[OUTPUT_JSON]\n{\n  \"hits\": [\n    {\n      \"keyword\": \"<must be in project_keywords>\",\n      \"confidence\": 0.0,\n      \"evidence\": \"<excerpt from text>\",\n      \"keyword_type\": \"\"\n    }\n  ]\n}\n[/OUTPUT_JSON]\n\n[INPUT_JSON]\n{\n  \"text\": \"帖子全文\",\n  \"project_keywords\": [\"监控词1\", \"监控词2\"]\n}\n[/INPUT_JSON]\n\n[PROMPT]\ntest prompt\n[/PROMPT]\n"
+  "version": "v5",
+  "template": "[OUTPUT_JSON]\n{\n  \"hits\": [\n    {\n      \"keyword\": \"<must be in project_keywords>\",\n      \"confidence\": 0.0,\n      \"evidence\": \"<excerpt from text>\",\n      \"keyword_type\": \"\"\n    }\n  ]\n}\n[/OUTPUT_JSON]\n\n[INPUT_JSON]\n{{input_json}}\n[/INPUT_JSON]\n\n[PROMPT]\n你是“监控词命中抽取器”。\n只返回严格 JSON（不要 markdown，不要解释）。\n\n硬性规则：\n1) 只能从 project_keywords 中选择 keyword；禁止输出不在列表内的词。\n2) evidence 必须是 text 中的原文片段（尽量短，通常 6~30 字）。\n3) 命中才输出；未命中时返回 {\"hits\": []}。\n4) 去重：同一个 keyword 最多输出 1 条，取最有代表性的 evidence。\n5) confidence 取值 [0,1]。强命中(语义明确+原文直接出现)建议 >=0.8；弱命中建议 0.5~0.79。\n6) keyword_type 可为空字符串；如果能从上下文判断为 feature/issue/topic 之一可填，否则留空。\n7) 不要输出 null；缺失用空数组或空字符串。\n\n输出必须严格匹配 [OUTPUT_JSON] 结构。\n[/PROMPT]\n"
 }

@@ -132,7 +132,7 @@ export const useRefreshStore = defineStore('refresh', () => {
       // Console progress logs:
       // - stage transitions
       // - message/meta updates within the same stage (backend uses a single-row progress state)
-      if (nextStage !== prevStage || nextUpdatedAt !== prevUpdatedAt || nextMsg !== prevMsg) {
+      if ((nextStage !== prevStage || nextUpdatedAt !== prevUpdatedAt || nextMsg !== prevMsg) && import.meta.env.DEV) {
         try {
           console.info('[prodwatch] refresh stage:', {
             project_id: st.project_id,

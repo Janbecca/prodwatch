@@ -12,6 +12,7 @@ import LLMConfig from '../views/LLMConfig.vue'
 import SystemOverview from '../views/SystemOverview.vue'
 
 const routes = [
+  { path: '/report-export/:id', name: 'report-export', component: ReportDetail },
   {
     path: '/',
     component: MainLayout,

@@ -4,7 +4,7 @@ import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
-import { createReport, deleteReport, fetchReportDetail, fetchReportEvidenceList, fetchReportsList, generateReport } from '../api/reports'
+import { createReport, deleteReport, exportReport, fetchReportDetail, fetchReportEvidenceList, fetchReportsList, generateReport } from '../api/reports'
 import { useProjectsStore } from './projects'
 
 function uniqNums(arr) {
@@ -190,7 +190,22 @@ export const useReportsStore = defineStore('reports', () => {
   }
 
   async function onExport(row) {
-    ElMessage.info(`导出暂未实现（report_id=${row?.id ?? '-'}）`)
+    const reportId = Number(row?.id)
+    if (!Number.isFinite(reportId) || reportId <= 0) return
+    try {
+      const { blob, filename } = await exportReport(reportId, { format: 'pdf' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename || `report_${reportId}.pdf`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+      ElMessage.success(`已导出报告 #${reportId}`)
+    } catch (e) {
+      ElMessage.error(e?.message || String(e))
+    }
   }
 
   async function onEvidence(row) {
@@ -225,8 +240,8 @@ export const useReportsStore = defineStore('reports', () => {
           cfg.include_sentiment ? 'sentiment' : null,
           cfg.include_trend ? 'trend' : null,
           cfg.include_topics ? 'topics' : null,
-          cfg.include_feature_analysis ? 'feature' : null,
-          cfg.include_spam ? 'spam' : null,
+          cfg.include_feature_analysis ? 'risk' : null,
+          cfg.include_spam ? 'feedback' : null,
           cfg.include_competitor_compare ? 'competitor' : null,
           cfg.include_strategy ? 'strategy' : null,
         ].filter(Boolean),

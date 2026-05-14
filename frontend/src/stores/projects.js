@@ -51,7 +51,7 @@ export const useProjectsStore = defineStore('projects', () => {
     }
 
     issues.value = nextIssues
-    if (nextIssues.length > 0) {
+    if (nextIssues.length > 0 && import.meta.env.DEV) {
       // eslint-disable-next-line no-console
       console.warn('[projectsStore selfCheck]', ...nextIssues)
     }

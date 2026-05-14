@@ -1,5 +1,4 @@
-# 作用：后端主流程：串联抓取→过滤→分析→报告生成等流水线。
-
+﻿# 浣滅敤锛氬悗绔富娴佺▼锛氫覆鑱旀姄鍙栤啋杩囨护鈫掑垎鏋愨啋鎶ュ憡鐢熸垚绛夋祦姘寸嚎銆?
 from __future__ import annotations
 
 import argparse
@@ -139,7 +138,7 @@ def bootstrap_if_empty(con: sqlite3.Connection) -> int:
 
     platforms = [
         ("douyin", "Douyin"),
-        ("xhs", "小红书"),
+        ("xhs", "Xiaohongshu"),
     ]
     for code, name in platforms:
         con.execute(
@@ -924,12 +923,10 @@ def _build_post_candidates_realistic(
 ) -> list[PostCandidate]:
     """
     Realism-oriented simulated crawl:
-    - build per-refresh distribution_plan (deterministic, non-uniform; no random)
+    - build per-refresh distribution plan with dynamic sentiment mix (floats per job)
     - construct seeds (one seed => one post)
-    - ask crawler_generation LLM to write only (title/content) for each seed
-    - fail fast when generation fails (no fallback)
-
-    This intentionally avoids the legacy "platform x brand x keyword => fixed N posts per target" strategy.
+    - ask crawler_generation LLM to write title/content
+    - run lightweight anti-template rewrite for repeated patterns
     """
     from backend.llm.router import get_llm_router
     from backend.llm.prompts.store import get_prompt_store
@@ -945,6 +942,7 @@ def _build_post_candidates_realistic(
     brand_map = {int(r["id"]): str(r["name"]) for r in brand_rows}
     project_row = con.execute("SELECT product_category FROM project WHERE id=? LIMIT 1;", (int(project_id),)).fetchone()
     product_category = str(project_row["product_category"] or "") if project_row else ""
+    now_dt = datetime.utcnow()
     crawled_at = now_ts()
 
     kw_rows = con.execute(
@@ -980,7 +978,93 @@ def _build_post_candidates_realistic(
         seen_pairs.add(key)
         pairs.append(key)
 
-    base_dt = datetime.strptime(str(stat_date), "%Y-%m-%d")
+    scene_pool = ["看娃", "看老人", "看宠物", "门口安防", "夜间看家", "店铺监控", "远程看店", "快递看护"]
+    topic_pool = [x for x in monitor_keywords if x] or ["画质", "延迟", "报警", "回看", "夜视", "售后", "云存储", "连接稳定"]
+
+    def _pick(items: list[str], key: str) -> str:
+        if not items:
+            return ""
+        h = int(sha1_hex(key)[:8], 16)
+        return str(items[h % len(items)])
+
+    def _sentiment_thresholds() -> tuple[float, float, float]:
+        h = int(sha1_hex(f"sentiment|{int(crawl_job_id)}|{str(stat_date)}")[:12], 16)
+
+        def _j(idx: int) -> float:
+            raw = ((h >> (idx * 8)) & 0xFF) / 255.0
+            return (raw - 0.5) * 0.16
+
+        pos = max(0.08, 0.20 + _j(0))
+        neu = max(0.12, 0.30 + _j(1))
+        neg = max(0.12, 0.30 + _j(2))
+        mixed = max(0.08, 1.0 - pos - neu - neg)
+        s = pos + neu + neg + mixed
+        pos, neu, neg = pos / s, neu / s, neg / s
+        return pos, pos + neu, pos + neu + neg
+
+    t_pos, t_neu, t_neg = _sentiment_thresholds()
+
+    def _pick_sentiment(seed_id: str, platform_code: str) -> str:
+        h = int(sha1_hex(f"sentiment-pick|{seed_id}")[:8], 16)
+        x = (h % 10000) / 10000.0
+        pc = str(platform_code or "").strip().lower()
+        if pc in {"xhs", "xiaohongshu", "rednote"}:
+            x = min(0.9999, x + 0.04)
+        elif pc in {"dy", "douyin"}:
+            x = max(0.0, x - 0.02)
+        if x < t_pos:
+            return "positive"
+        if x < t_neu:
+            return "neutral"
+        if x < t_neg:
+            return "negative"
+        return "mixed"
+
+    def _pick_publish_time(seed_id: str, index_i: int) -> str:
+        h = int(sha1_hex(f"time|{seed_id}|{index_i}")[:12], 16)
+        day_offset = h % 7
+        p = (h // 7) % 1000
+        if p < 200:
+            hour_base = 8
+        elif p < 450:
+            hour_base = 12
+        elif p < 850:
+            hour_base = 19
+        else:
+            hour_base = 22
+        minute = (h // 1000) % 60
+        second = (h // 60000) % 60
+        hour = hour_base + int(((h // 3600000) % 3) - 1)
+        hour = max(0, min(23, hour))
+        dt = now_dt - timedelta(days=int(day_offset))
+        dt = dt.replace(hour=hour, minute=minute, second=second, microsecond=0)
+        if dt > now_dt:
+            dt = now_dt - timedelta(minutes=(index_i % 29) + 1)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    def _engagement(seed_id: str, sentiment: str, platform_code: str) -> tuple[int, int, int, int]:
+        h = int(sha1_hex(f"eng|{seed_id}|{sentiment}|{platform_code}")[:14], 16)
+        q = (h % 1000) / 1000.0
+        if q < 0.78:
+            like = 2 + (h % 65)
+            comment = (h // 97) % 18
+            share = (h // 571) % 9
+        elif q < 0.95:
+            like = 30 + (h % 240)
+            comment = 4 + ((h // 97) % 70)
+            share = 1 + ((h // 571) % 36)
+        else:
+            like = 220 + (h % 1200)
+            comment = 18 + ((h // 97) % 320)
+            share = 5 + ((h // 571) % 130)
+        if sentiment in {"negative", "mixed"}:
+            comment = int(comment * 1.25) + int((h // 1111) % 7)
+        if str(platform_code or "").lower() in {"dy", "douyin"}:
+            view = like * 35 + comment * 16 + share * 52 + (h % 500)
+        else:
+            view = like * 20 + comment * 18 + share * 40 + (h % 260)
+        return max(0, int(like)), max(0, int(comment)), max(0, int(share)), max(1, int(view))
+
     seeds: list[dict[str, Any]] = []
     for platform_id, brand_id in pairs:
         platform_code, platform_name = platform_map.get(int(platform_id), (f"p{platform_id}", ""))
@@ -1003,16 +1087,14 @@ def _build_post_candidates_realistic(
         for i in range(int(n)):
             seed_i = int(offset) + int(i)
             seed_id = f"{int(crawl_job_id)}|{int(platform_id)}|{int(brand_id)}|{seed_i}"
-            publish_dt = base_dt + timedelta(minutes=(int(platform_id) % 7) * 11 + i * 7 + (int(brand_id) % 5))
-            publish_time = publish_dt.strftime("%Y-%m-%d %H:%M:%S")
+            publish_time = _pick_publish_time(seed_id, seed_i)
             external_post_id = sha1_hex(f"gen|{seed_id}")[:18]
             post_url = f"https://example.local/{platform_code}/post/{external_post_id}?job={int(crawl_job_id)}"
-
-            h = int(sha1_hex(seed_id)[:6], 16)
-            like_count = int(h % 320)
-            comment_count = int((h // 7) % 120)
-            share_count = int((h // 29) % 70)
-            view_count = int(like_count * 30 + comment_count * 18 + share_count * 50 + (h % 500))
+            scene = _pick(scene_pool, f"scene|{seed_id}")
+            topic = _pick(topic_pool, f"topic|{seed_id}")
+            sentiment = _pick_sentiment(seed_id, str(platform_code))
+            platform_style = "douyin" if str(platform_code).lower() in {"dy", "douyin"} else ("xiaohongshu" if str(platform_code).lower() in {"xhs", "xiaohongshu", "rednote"} else "generic")
+            like_count, comment_count, share_count, view_count = _engagement(seed_id, sentiment, str(platform_code))
             author_name = f"u{sha1_hex('author|' + seed_id)[:8]}"
 
             seeds.append(
@@ -1028,6 +1110,10 @@ def _build_post_candidates_realistic(
                     "external_post_id": external_post_id,
                     "post_url": post_url,
                     "publish_time": publish_time,
+                    "scene": scene,
+                    "topic": topic,
+                    "sentiment": sentiment,
+                    "platform_style": platform_style,
                     "like_count": like_count,
                     "comment_count": comment_count,
                     "share_count": share_count,
@@ -1042,6 +1128,12 @@ def _build_post_candidates_realistic(
                                 "brand_name": brand_name,
                                 "product_category": product_category,
                                 "keyword_hints": pick_hints(seed_id, 3),
+                                "post_profile": {
+                                    "scene": scene,
+                                    "sentiment": sentiment,
+                                    "platform_style": platform_style,
+                                    "topic": topic,
+                                },
                             }
                         },
                         ensure_ascii=False,
@@ -1050,14 +1142,11 @@ def _build_post_candidates_realistic(
                 }
             )
 
-    # Best-effort status tracking: targets are hints; mark them as processed for this job.
     for t in targets:
         mark_crawl_job_target_status(con, int(t.id), "running")
 
     prompt_version: str = get_prompt_store().get("crawler_generation").version
 
-    # Prevent request timeouts by batching seeds into smaller LLM calls.
-    # Default batch size is conservative; override via env when needed.
     try:
         batch_size = int(str(os.environ.get("PRODWATCH_CRAWLER_GENERATION_SEED_BATCH_SIZE") or "4").strip())
     except Exception:
@@ -1074,6 +1163,10 @@ def _build_post_candidates_realistic(
             "brand_name": s.get("brand_name"),
             "keyword_hints": s.get("keyword_hints") or [],
             "publish_time": s.get("publish_time"),
+            "scene": s.get("scene"),
+            "topic": s.get("topic"),
+            "sentiment": s.get("sentiment"),
+            "platform_style": s.get("platform_style"),
         }
 
     def _chunks(items: list[dict[str, Any]], size: int) -> list[list[dict[str, Any]]]:
@@ -1121,7 +1214,8 @@ def _build_post_candidates_realistic(
             res.model,
             res.ok,
             type(res.output).__name__,
-            json.dumps(res.output, ensure_ascii=False, default=str)[:2000],)
+            json.dumps(res.output, ensure_ascii=False, default=str)[:2000],
+        )
         if not bool(res.ok):
             raise RuntimeError(
                 f"crawler_generation failed (batch {bi}/{len(batches)} size={len(batch)}): {res.error or 'unknown error'}"
@@ -1138,12 +1232,6 @@ def _build_post_candidates_realistic(
         batch_map: dict[str, dict[str, Any]] = {}
         if isinstance(maybe, list):
             for item in maybe:
-                log.warning(
-                    "crawler_generation item seed_id=%s keys=%s item_preview=%s",
-                    str(item.get("seed_id") or "").strip(),
-                    list(item.keys()) if isinstance(item, dict) else None,
-                    json.dumps(item, ensure_ascii=False, default=str)[:1000],
-                    )
                 if not isinstance(item, dict):
                     continue
                 sid = str(item.get("seed_id") or "").strip()
@@ -1151,8 +1239,6 @@ def _build_post_candidates_realistic(
                     batch_map[sid] = item
                     generated_map[sid] = item
 
-        # Best-effort: do not fail the whole refresh when LLM returns incomplete items.
-        # Missing seeds will fall back to deterministic title/content later.
         missing_batch = [str(s["seed_id"]) for s in batch if str(s["seed_id"]) not in batch_map]
         if missing_batch:
             try:
@@ -1184,44 +1270,115 @@ def _build_post_candidates_realistic(
             generated_map.setdefault(str(sid), {})
 
     invalid_fallback_count = 0
+    rewrite_count = 0
+
+    repetitive_phrases = {"真实体验", "我是真没想到", "先观望", "有点小问题", "还行但也不是完美"}
+    scene_terms = set(scene_pool)
+
+    def _norm_text(v: str) -> str:
+        s = str(v or "").strip().lower()
+        for ch in [" ", "\n", "\t", "，", "。", ",", ".", "！", "?", "？", "：", "；", "、", "（", "）", "(", ")"]:
+            s = s.replace(ch, "")
+        return s
+
+    def _prefix15(v: str) -> str:
+        s = _norm_text(v)
+        return s[:15] if s else ""
+
+    def _contains_scene(content: str, scene: str) -> bool:
+        c = str(content or "")
+        if scene and scene in c:
+            return True
+        return any(x in c for x in scene_terms)
 
     def _fallback_title(seed: dict[str, Any]) -> str:
+        sid = str(seed.get("seed_id") or "")
         brand = str(seed.get("brand_name") or "").strip() or "某品牌"
-        hints = seed.get("keyword_hints") or []
-        kw = ""
-        if isinstance(hints, list) and hints:
-            kw = str(hints[0] or "").strip()
-        if not kw:
-            kw = "体验"
-        return f"{brand} {kw} 真实体验"
-
-    def _fallback_content(seed: dict[str, Any]) -> str:
-        sid = str(seed.get("seed_id") or "").strip()
-        brand = str(seed.get("brand_name") or "").strip() or "某品牌"
-        hints = seed.get("keyword_hints") or []
-        kw = ""
-        if isinstance(hints, list) and hints:
-            kw = str(hints[0] or "").strip()
-        if not kw:
-            kw = "使用感受"
-        platform_code = str(seed.get("platform_code") or "").strip().lower()
-        h = int(sha1_hex(sid or brand)[:6], 16)
-        if platform_code in {"douyin", "dy"}:
+        scene = str(seed.get("scene") or "日常看护")
+        topic = str(seed.get("topic") or "体验")
+        sentiment = str(seed.get("sentiment") or "neutral")
+        h = int(sha1_hex(f"ft|{sid}")[:6], 16)
+        if sentiment == "negative":
             pool = [
-                f"{brand}这{kw}我是真没想到…",
-                f"{kw}这块还行，但也不是完美",
-                f"用下来{kw}有点小问题，先观望",
-                f"{brand}整体还可以，{kw}看个人需求",
+                f"{brand}{topic}这点有点劝退",
+                f"{scene}场景下，{brand}{topic}有点烦",
+                f"{brand}用着不算差，但{topic}真要优化",
+            ]
+        elif sentiment == "mixed":
+            pool = [
+                f"{brand}整体可以，但{topic}我还在纠结",
+                f"{scene}里能用，但{topic}这个点别忽略",
+                f"{brand}有优点也有坑，{topic}最明显",
+            ]
+        elif sentiment == "positive":
+            pool = [
+                f"{scene}用{brand}，目前{topic}挺稳",
+                f"{brand}{topic}比我预期好一些",
+                f"{scene}这几天用下来，{brand}还不错",
             ]
         else:
-            # default (short text)
             pool = [
-                f"这两天用{brand}，{kw}这块我感觉还行，但也有点小槽点。",
-                f"{brand}的{kw}被讨论挺多，我自己用下来是：能接受，但还有优化空间。",
-                f"说实话{kw}这点不算惊艳，不过整体也没翻车。",
-                f"刚体验了一下，{kw}有好有坏，后面再多用几天看看。",
+                f"{brand}{topic}是通病吗？",
+                f"{scene}里试了下{brand}，说下{topic}",
+                f"{brand}这个{topic}，大家体验如何",
             ]
-        return pool[h % len(pool)]
+        return str(pool[h % len(pool)])
+
+    def _fallback_content(seed: dict[str, Any]) -> str:
+        sid = str(seed.get("seed_id") or "")
+        brand = str(seed.get("brand_name") or "").strip() or "某品牌"
+        scene = str(seed.get("scene") or "日常看护")
+        topic = str(seed.get("topic") or "体验")
+        sentiment = str(seed.get("sentiment") or "neutral")
+        platform_code = str(seed.get("platform_code") or "").strip().lower()
+        h = int(sha1_hex(f"fc|{sid}|{brand}|{scene}|{topic}")[:6], 16)
+        if platform_code in {"douyin", "dy"}:
+            if sentiment == "negative":
+                pool = [
+                    f"{scene}的时候，{brand}{topic}反复出问题，评论区有人同款吗。",
+                    f"本来想省心，结果{scene}里{topic}挺折腾，先观望。",
+                ]
+            elif sentiment == "mixed":
+                pool = [
+                    f"{scene}里能用是能用，但{topic}这块时好时坏，体验有点拧巴。",
+                    f"{brand}整体OK，不过{scene}场景下{topic}偶发卡顿，挺影响心情。",
+                ]
+            elif sentiment == "positive":
+                pool = [
+                    f"{scene}这几天一直开着，{brand}{topic}基本稳，省了不少心。",
+                    f"{scene}场景下表现超预期，{topic}这块没怎么踩坑。",
+                ]
+            else:
+                pool = [
+                    f"{scene}里试了一周，{brand}{topic}有优点也有小问题，继续观察。",
+                    f"{brand}放在{scene}场景里还行，{topic}算中规中矩。",
+                ]
+        else:
+            if sentiment == "negative":
+                pool = [
+                    f"我主要用在{scene}，{brand}的{topic}最近确实影响体验，尤其是关键时刻会掉链子。",
+                    f"{scene}这个场景对稳定性要求高，{brand}{topic}目前看还有明显改进空间。",
+                ]
+            elif sentiment == "mixed":
+                pool = [
+                    f"在{scene}场景里，{brand}整体功能是够用的，但{topic}这块会打断使用节奏。",
+                    f"{brand}基础能力不错，不过放到{scene}里，{topic}偶发问题会让人有点膈应。",
+                ]
+            elif sentiment == "positive":
+                pool = [
+                    f"我在{scene}连续用了几天，{brand}{topic}表现比较稳定，暂时没遇到大问题。",
+                    f"{scene}需求下，{brand}的{topic}比预想更顺手，日常使用负担不大。",
+                ]
+            else:
+                pool = [
+                    f"目前主要放在{scene}使用，{brand}{topic}没有特别惊艳，但也不算踩雷。",
+                    f"从{scene}的实际需求看，{brand}{topic}处于能用状态，后续继续看稳定性。",
+                ]
+        return str(pool[h % len(pool)])
+
+    title_seen: dict[str, int] = {}
+    content_prefix_seen: dict[str, int] = {}
+    phrase_seen: dict[str, int] = {}
 
     candidates: list[PostCandidate] = []
     for s in seeds:
@@ -1241,22 +1398,68 @@ def _build_post_candidates_realistic(
                 content_raw,
                 json.dumps(gen, ensure_ascii=False, default=str),
             )
-
-            # fallback（关键：避免整批失败）
             title = title or _fallback_title(s)
             content = content or _fallback_content(s)
-
             invalid_fallback_count += 1
+
         if _FORBIDDEN_FIELD_STITCH_RE.search(content):
             raise RuntimeError(f"crawler_generation invalid content (field stitch) seed_id={sid}")
+
+        scene = str(s.get("scene") or "")
+        pfx = _prefix15(content)
+        tkey = _norm_text(title)
+        repeated_phrase_hit = ""
+        for p in repetitive_phrases:
+            if p in content or p in title:
+                if phrase_seen.get(p, 0) >= 2:
+                    repeated_phrase_hit = p
+                    break
+
+        need_rewrite = False
+        if tkey and title_seen.get(tkey, 0) >= 1:
+            need_rewrite = True
+        if pfx and content_prefix_seen.get(pfx, 0) >= 1:
+            need_rewrite = True
+        if repeated_phrase_hit:
+            need_rewrite = True
+        if len(_norm_text(content)) < 28 and not _contains_scene(content, scene):
+            need_rewrite = True
+        if "真实体验" in title:
+            need_rewrite = True
+
+        if need_rewrite:
+            title = _fallback_title(s)
+            content = _fallback_content(s)
+            rewrite_count += 1
+
+        if scene and scene not in content:
+            content = f"{content} 我这边主要是{scene}场景在用。"
+
+        t2 = _norm_text(title)
+        p2 = _prefix15(content)
+        if t2:
+            title_seen[t2] = title_seen.get(t2, 0) + 1
+        if p2:
+            content_prefix_seen[p2] = content_prefix_seen.get(p2, 0) + 1
+        for p in repetitive_phrases:
+            if p in content or p in title:
+                phrase_seen[p] = phrase_seen.get(p, 0) + 1
 
         raw_payload = _merge_raw_payload_text(
             s.get("raw_payload"),
             {
+                "source": "llm_fallback",
+                "generation_version": "mock_llm_realistic_v2",
                 "generated_by": "llm",
                 "provider": str(router_provider or ""),
                 "model": str(router_model or ""),
                 "prompt_version": str(prompt_version or ""),
+                "post_profile": {
+                    "scene": s.get("scene"),
+                    "sentiment": s.get("sentiment"),
+                    "platform_style": s.get("platform_style"),
+                    "topic": s.get("topic"),
+                },
                 "seed": {
                     "seed_id": sid,
                     "platform_code": s.get("platform_code"),
@@ -1294,10 +1497,11 @@ def _build_post_candidates_realistic(
         mark_crawl_job_target_status(con, int(t.id), "success")
 
     log.warning(
-        "crawler_generation completed crawl_job_id=%s total=%s fallback_count=%s",
+        "crawler_generation completed crawl_job_id=%s total=%s fallback_count=%s rewrite_count=%s",
         crawl_job_id,
         len(seeds),
         invalid_fallback_count,
+        rewrite_count,
     )
     return candidates
 
@@ -1316,48 +1520,22 @@ def _merge_raw_payload_text(raw_payload: Any, extra: dict[str, Any]) -> str:
 
 
 def _fallback_title(seed: dict[str, Any]) -> str:
-    platform_code = str(seed.get("platform_code") or "")
-    topic = str(seed.get("topic") or "体验")
+    topic = str(seed.get("topic") or "experience")
     brand = str(seed.get("brand_name") or "").strip()
     if brand:
-        return f"{brand} {topic} 讨论"
-    return f"{topic} 讨论"
+        return f"{brand} {topic} discussion"
+    return f"{topic} discussion"
 
 
 def _fallback_content(seed: dict[str, Any]) -> str:
     platform_code = str(seed.get("platform_code") or "")
-    topic = str(seed.get("topic") or "相关体验")
-    relevance = str(seed.get("relevance") or "general")
-    brand = str(seed.get("brand_name") or "").strip() or "某品牌"
-    kw = " / ".join([str(x) for x in (seed.get("keyword_hints") or []) if str(x).strip()]) or topic
-    sid = str(seed.get("seed_id") or "")
-    h = sha1_hex(f"{sid}|{platform_code}|{topic}|{relevance}")
-    mood = "还行"
-    if relevance == "strong":
-        mood = "挺有感触"
-    elif relevance == "weak":
-        mood = "有点纠结"
-    elif relevance == "noise":
-        mood = "跑个题"
-
-    c = str(platform_code).lower()
-    if c == "douyin":
-        pool = [
-            f"{topic}这块{mood}，{kw}确实有讨论点",
-            f"{mood}…{topic}我是真的没想到会这样",
-            f"{topic}就图个{mood}，别太上头",
-            f"{kw}随便聊聊，{topic}最近挺火",
-        ]
-    else:
-        pool = [
-            f"刷到一堆{topic}的讨论，{mood}…{kw}也太真实了",
-            f"{topic}这事儿又上热搜了？我看大家说得挺分裂的",
-            f"讲真，{topic}我站中立，但{kw}这点确实要注意",
-            f"{brand}相关的{topic}最近挺多，不过也不排除有噪音",
-        ]
-
-    idx = int(h[:4], 16) % len(pool)
-    return str(pool[idx])
+    topic = str(seed.get("topic") or "related experience")
+    brand = str(seed.get("brand_name") or "").strip() or "a brand"
+    hints = [str(x) for x in (seed.get("keyword_hints") or []) if str(x).strip()]
+    kw = " / ".join(hints) if hints else topic
+    if str(platform_code).lower() in {"douyin", "dy"}:
+        return f"{brand} {topic}: short note about {kw}."
+    return f"Sharing a quick observation on {brand} and {topic}, mainly around {kw}."
 
 
 def deduplicate_candidates(candidates: Iterable[PostCandidate]) -> list[PostCandidate]:
@@ -2515,7 +2693,7 @@ def run_pipeline_existing_job(
             str(crawl_source_norm),
         )
 
-        # 进程启动时就写入一次进度，确保UI能看到"simulate"阶段的日志和状态。
+        # Write initial progress so frontend can show the simulate stage immediately.
         _progress(
             "simulate",
             "simulate started",
@@ -2597,7 +2775,7 @@ def run_pipeline_existing_job(
         log.info("pipeline stage_start crawl_job_id=%s stage=%s", int(crawl_job_id), stage)
         _progress("simulate", f"{stage} started", {"stage": str(stage), "candidate_count": int(len(candidates or []))})
         insert_posts(con, candidates)
-        # 写入进度供前端log
+        # 鍐欏叆杩涘害渚涘墠绔痩og
         post_raw_cnt = None
         try:
             row = con.execute("SELECT count(1) c FROM post_raw WHERE crawl_job_id=?;", (int(crawl_job_id),)).fetchone()
@@ -2641,7 +2819,7 @@ def run_pipeline_existing_job(
             len(canonical_post_ids or []),
         )
 
-        # simulate -> analyze. 写入进度供前端log
+        # simulate -> analyze. 鍐欏叆杩涘害渚涘墠绔痩og
         _progress(
             "analyze",
             "analysis started",
@@ -2660,7 +2838,7 @@ def run_pipeline_existing_job(
             len(canonical_post_ids or []),
         )
 
-        # analyze -> aggregate.写入进度供前端log
+        # analyze -> aggregate.鍐欏叆杩涘害渚涘墠绔痩og
         _progress(
             "aggregate",
             "aggregate started",
@@ -2696,8 +2874,7 @@ def run_pipeline_existing_job(
             time.perf_counter() - pipeline_t0,
         )
     except Exception as e:
-        #确保任何异常都能被捕获并记录到crawl_job中
-        #避免出现"卡在simulate阶段但UI不显示日志"的情况。
+        # Ensure any pipeline exception is persisted on crawl_job/progress.
         try:
             con.rollback()
         except Exception:
